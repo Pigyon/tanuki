@@ -1,0 +1,18 @@
+services:
+  tanuki:
+    build: .
+    container_name: tanuki
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./data:/data:ro
+    environment:
+      - TANUKI_DATA=/data
+      - TANUKI_PROXY_PORT=18080
+      - TANUKI_UPSTREAM=https://api.anthropic.com
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    restart: unless-stopped
