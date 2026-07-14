@@ -35,12 +35,25 @@ type regexEntry struct {
 //go:embed terminology.json
 var terminologyJSON []byte
 
+//go:embed tlds.json
+var tldsJSON []byte
+
 var terminology []termEntry
 var compiledTermRegexes []regexEntry
+var commonTLDs map[string]bool
 
 func init() {
 	if err := json.Unmarshal(terminologyJSON, &terminology); err != nil {
 		panic("invalid terminology.json: " + err.Error())
+	}
+
+	var tldsList []string
+	if err := json.Unmarshal(tldsJSON, &tldsList); err != nil {
+		panic("invalid tlds.json: " + err.Error())
+	}
+	commonTLDs = make(map[string]bool, len(tldsList))
+	for _, tld := range tldsList {
+		commonTLDs[tld] = true
 	}
 
 	sorted := make([]termEntry, len(terminology))
@@ -284,20 +297,7 @@ func findNewPublicIPs(text string) []string {
 
 var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
 
-var commonTLDs = map[string]bool{
-	"com": true, "org": true, "net": true, "io": true, "co": true,
-	"gov": true, "edu": true, "mil": true,
-	"info": true, "biz": true, "dev": true, "app": true,
-	"cloud": true, "tech": true, "online": true, "site": true,
-	"xyz": true, "me": true, "tv": true, "cc": true,
-	"uk": true, "de": true, "fr": true, "jp": true, "cn": true,
-	"au": true, "ca": true, "br": true, "in": true, "ru": true,
-	"nl": true, "it": true, "es": true, "se": true, "no": true,
-	"fi": true, "dk": true, "pl": true, "cz": true, "at": true,
-	"ch": true, "be": true, "ie": true, "il": true, "za": true,
-	"kr": true, "sg": true, "hk": true, "tw": true, "nz": true,
-	"mx": true, "ar": true, "cl": true, "pt": true, "hu": true,
-}
+
 
 func hasCommonTLD(domain string) bool {
 	parts := strings.Split(domain, ".")
