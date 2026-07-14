@@ -1,0 +1,34 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+
+# Go workspace file
+go.work
+go.work.sum
+
+# tanuki specific
+/tanuki
+/data/
+
+# Editor/IDE directories
+.idea/
+.vscode/
+*.swp
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# AI stuff
+.claude/
+.agents/
