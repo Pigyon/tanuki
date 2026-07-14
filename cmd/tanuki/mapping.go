@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 type mappingEntry struct {
@@ -157,6 +159,11 @@ func nextCounter(engDir, filename, defaultVal string) int {
 // --- Domain parsing ---
 
 func extractBaseDomain(domain string) string {
+	base, err := publicsuffix.EffectiveTLDPlusOne(domain)
+	if err == nil {
+		return base
+	}
+
 	parts := strings.Split(domain, ".")
 	if len(parts) >= 2 {
 		return parts[len(parts)-2] + "." + parts[len(parts)-1]
@@ -166,9 +173,16 @@ func extractBaseDomain(domain string) string {
 }
 
 func extractOrgName(domain string) string {
-	parts := strings.Split(domain, ".")
+	base := extractBaseDomain(domain)
+	suffix, _ := publicsuffix.PublicSuffix(domain)
+	
+	if suffix != "" && strings.HasSuffix(base, "."+suffix) {
+		return strings.TrimSuffix(base, "."+suffix)
+	}
+
+	parts := strings.Split(base, ".")
 	if len(parts) >= 2 {
-		return parts[len(parts)-2]
+		return parts[0]
 	}
 
 	return domain
@@ -295,7 +309,7 @@ func findNewPublicIPs(text string) []string {
 	return result
 }
 
-var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
+var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z0-9-]{2,}\b`)
 
 
 
