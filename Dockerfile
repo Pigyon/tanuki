@@ -1,6 +1,6 @@
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /build
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -trimpath -o tanuki ./cmd/tanuki
 RUN echo "tanuki:x:65534:65534::/:" > /etc/passwd.minimal
