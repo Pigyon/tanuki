@@ -36,6 +36,8 @@ func main() {
 		cmdHook(os.Args[2:])
 	case "setup":
 		cmdSetup()
+	case "reset":
+		cmdReset(os.Args[2:])
 	case "proxy":
 		runProxy()
 	case "help", "--help", "-h":
@@ -64,6 +66,7 @@ Host CLI (run on your machine to manage engagements):
   tanuki activate <name>                   Switch engagement
   tanuki test <text>                       Test rewriting on sample text
   tanuki terms                             Show terminology mappings
+  tanuki reset [--data]                    Remove hooks and CLAUDE.md (--data also wipes engagements)
   tanuki help                              Show this help
 
 Workflow (zero-config):

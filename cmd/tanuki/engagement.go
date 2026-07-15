@@ -120,6 +120,43 @@ func cmdList() {
 	}
 }
 
+func cmdReset(args []string) {
+	wipeData := false
+	for _, a := range args {
+		if a == "--data" {
+			wipeData = true
+		}
+	}
+
+	if fileExists(filepath.Join(".claude", "settings.json")) {
+		if err := os.Remove(filepath.Join(".claude", "settings.json")); err == nil {
+			fmt.Println("[tanuki] Removed .claude/settings.json")
+		}
+	}
+
+	if fileExists("CLAUDE.md") {
+		if err := os.Remove("CLAUDE.md"); err == nil {
+			fmt.Println("[tanuki] Removed CLAUDE.md")
+		}
+	}
+
+	if wipeData {
+		dd := dataDir()
+		if fileExists(dd) {
+			if err := os.RemoveAll(dd); err == nil {
+				fmt.Println("[tanuki] Removed engagement data:", dd)
+			} else {
+				fmt.Fprintf(os.Stderr, "[tanuki] WARNING: could not remove %s: %v\n", dd, err)
+			}
+		}
+	}
+
+	fmt.Println("[tanuki] Reset complete.")
+	if !wipeData {
+		fmt.Println("[tanuki] Engagement data preserved. Use --data to also remove it.")
+	}
+}
+
 func cmdActivate(args []string) {
 	if len(args) == 0 {
 		fatal("Usage: tanuki activate <engagement-name>")
