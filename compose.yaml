@@ -5,14 +5,27 @@ services:
     ports:
       - "18080:18080"
     volumes:
-      - ./data:/data:ro
+      - tanuki-data:/data
+      - ./.claude:/workspace/.claude
+    working_dir: /workspace
     environment:
       - TANUKI_DATA=/data
       - TANUKI_PROXY_PORT=18080
       - TANUKI_UPSTREAM=https://api.anthropic.com
+      ## Custom fiction org name (default: DEVTARGET):
+      #- TANUKI_FICTION_ORG=ACMECORP
+      ## Pre-seed target domains (comma-separated):
+      #- TANUKI_DOMAINS=example.com,api.example.com
+      ## Pre-seed target IPs (comma-separated):
+      #- TANUKI_IPS=93.184.216.34
+      ## Custom rewrite rules (semicolon-separated, pipe-delimited real|fiction):
+      #- TANUKI_RULES=John Smith|Jane Developer;Project Phoenix|Test Alpha
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true
     restart: unless-stopped
+
+volumes:
+  tanuki-data:
