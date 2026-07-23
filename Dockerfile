@@ -2,7 +2,7 @@
 
 # Cross-compiles from the build platform: Go needs no emulation, so an
 # arm64 image builds at native speed on an amd64 runner.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
