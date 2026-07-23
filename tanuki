@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+# Convenience wrapper: runs a tanuki command inside the running container.
+#
+#   ./tanuki add example.com   ==  docker compose exec tanuki /tanuki add example.com
+set -eu
+
+COMPOSE="docker compose"
+if ! docker compose version >/dev/null 2>&1; then
+	if command -v docker-compose >/dev/null 2>&1; then
+		COMPOSE="docker-compose"
+	else
+		echo "tanuki: docker compose not found, install Docker first" >&2
+		exit 1
+	fi
+fi
+
+if [ "$($COMPOSE ps -q tanuki 2>/dev/null)" = "" ]; then
+	echo "tanuki: container is not running, start it with: $COMPOSE up -d" >&2
+	exit 1
+fi
+
+exec $COMPOSE exec -T tanuki /tanuki "$@"

@@ -17,7 +17,7 @@ go.work
 go.work.sum
 
 # tanuki specific
-/tanuki
+/dist/
 /data/
 
 # Editor/IDE directories
