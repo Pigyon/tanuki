@@ -1,0 +1,62 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If real target data leaked to the upstream API, do not file this here.**
+        That is a security issue: report it privately via
+        [Security → Report a vulnerability](https://github.com/Pigyon/tanuki/security/advisories/new).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `./tanuki version`
+      placeholder: "tanuki v0.1.0 (commit abc1234)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Exact commands. `./tanuki test "<text>"` output is the most useful
+        thing you can include for a rewriting bug.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: mappings
+    attributes:
+      label: Relevant mappings
+      description: |
+        Output of `./tanuki map`, with real values replaced by placeholders
+        if the engagement is sensitive. Keep the shape (`domain|X|localhost:9000`).
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker compose logs tanuki` — run with TANUKI_DEBUG=1 if you can."
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: Host and Docker version
+      placeholder: "macOS 15.2 arm64, Docker 27.4.0"
+    validations:
+      required: true
