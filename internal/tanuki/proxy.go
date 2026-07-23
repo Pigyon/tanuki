@@ -3,6 +3,8 @@ package tanuki
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -23,7 +25,10 @@ var hopByHopHeaders = map[string]bool{
 	"Upgrade":             true,
 }
 
-const maxBodySize = 10 << 20 // 10 MB
+const (
+	maxBodySize = 10 << 20 // 10 MB request body
+	maxRespSize = 64 << 20 // 64 MB buffered response / SSE event
+)
 
 var (
 	nnBoundary   = []byte("\n\n")
@@ -31,7 +36,7 @@ var (
 )
 
 func runProxy() {
-	port := getProxyPort()
+	port := proxyPort()
 	upstream := envOr("TANUKI_UPSTREAM", "https://api.anthropic.com")
 
 	eng, err := ensureEngagement()
@@ -55,6 +60,7 @@ func runProxy() {
 
 	mappings := loadMappings(engDir)
 	logger.Info("proxy starting",
+		"version", versionString(),
 		"engagement", eng,
 		"mappings", len(mappings),
 	)
@@ -68,23 +74,30 @@ func runProxy() {
 		Addr:              "0.0.0.0:" + port,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       120 * time.Second,
-		Handler:           &proxyHandler{upstream: upstream},
+		// No write deadline: a long streaming /v1/messages response can run
+		// past any fixed timeout. Client disconnect is covered by r.Context().
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
+		Handler:      &proxyHandler{upstream: upstream},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	errCh := make(chan error, 1)
+
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("proxy listen failed", "error", err)
-			os.Exit(1)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Info("shutting down proxy")
+	select {
+	case <-ctx.Done():
+		logger.Info("shutting down proxy")
+	case err := <-errCh:
+		fatal("proxy listen failed: " + err.Error())
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -104,7 +117,6 @@ type proxyHandler struct {
 	upstream string
 }
 
-//nolint:funlen,gocyclo // ServeHTTP handles complex proxying logic
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 
@@ -114,40 +126,30 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body.Close()
+	_ = r.Body.Close()
 
 	isMessagesPath := strings.HasPrefix(r.URL.Path, "/v1/messages")
 
 	if isMessagesPath && len(body) > 0 {
-		eng := getEngagement()
-		if eng != "" {
-			rw := proxyCache.getRewriter(engagementDir(eng), "r2f")
-			if rw != nil {
-				body = []byte(rw.rewrite(string(body)))
-			}
+		anonymized, err := anonymizeUpstreamBody(body)
+		if err != nil {
+			// Fail closed: never forward a prompt body we could not anonymize.
+			logger.Warn("refusing to forward request unanonymized", "path", r.URL.Path, "reason", err.Error())
+			http.Error(w, "tanuki refused to forward request: "+err.Error(), http.StatusServiceUnavailable)
+
+			return
 		}
+
+		body = anonymized
 	}
 
-	proxyReq, err := http.NewRequestWithContext(
-		r.Context(),
-		r.Method,
-		h.upstream+r.URL.RequestURI(),
-		bytes.NewReader(body),
-	)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, h.upstream+r.URL.RequestURI(), bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "failed to create request", http.StatusBadGateway)
 		return
 	}
 
-	for key, vals := range r.Header {
-		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
-			continue
-		}
-
-		for _, val := range vals {
-			proxyReq.Header.Add(key, val)
-		}
-	}
+	copyProxyHeaders(proxyReq.Header, r.Header, false)
 
 	if isMessagesPath {
 		proxyReq.Header.Del("Accept-Encoding")
@@ -160,7 +162,8 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+
+	defer func() { _ = resp.Body.Close() }()
 
 	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	willRewrite := isMessagesPath && (isSSE || resp.ContentLength != 0)
@@ -173,66 +176,111 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"sse", isSSE,
 	)
 
-	for key, vals := range resp.Header {
-		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
+	copyProxyHeaders(w.Header(), resp.Header, willRewrite)
+	w.WriteHeader(resp.StatusCode)
+	h.forwardResponse(w, resp, isMessagesPath, isSSE)
+}
+
+// copyProxyHeaders copies non-hop-by-hop headers from src to dst, dropping
+// Content-Length when the body will be rewritten (its length changes).
+func copyProxyHeaders(dst, src http.Header, dropContentLength bool) {
+	for key, vals := range src {
+		canonical := http.CanonicalHeaderKey(key)
+		if hopByHopHeaders[canonical] {
 			continue
 		}
 
-		if willRewrite && http.CanonicalHeaderKey(key) == "Content-Length" {
+		if dropContentLength && canonical == "Content-Length" {
 			continue
 		}
 
 		for _, val := range vals {
-			w.Header().Add(key, val)
+			dst.Add(key, val)
 		}
 	}
+}
 
-	w.WriteHeader(resp.StatusCode)
-
-	if isMessagesPath {
-		rw := responseRewriter()
-
-		if isSSE {
-			h.streamSSEWithRewrite(w, resp.Body, rw)
-		} else {
-			h.forwardWithRewrite(w, resp.Body, rw)
-		}
-
+func (h *proxyHandler) forwardResponse(w http.ResponseWriter, resp *http.Response, messagesPath, isSSE bool) {
+	if !messagesPath {
+		h.forwardRaw(w, resp.Body)
 		return
 	}
 
-	h.forwardRaw(w, resp.Body)
+	rw := responseRewriter()
+	if isSSE {
+		h.streamSSEWithRewrite(w, resp.Body, rw)
+		return
+	}
+
+	h.forwardWithRewrite(w, resp.Body, rw)
 }
 
+// sseSink is the destination for rewritten SSE events. A nil flusher means
+// the underlying ResponseWriter does not support flushing.
+type sseSink struct {
+	w       io.Writer
+	flusher http.Flusher
+	rw      *rewriter
+}
+
+func newSSESink(w http.ResponseWriter, rw *rewriter) sseSink {
+	flusher, _ := w.(http.Flusher)
+
+	return sseSink{w: w, flusher: flusher, rw: rw}
+}
+
+// write rewrites text and sends it downstream, flushing so the client sees
+// each event as it arrives rather than at end of stream.
+func (s sseSink) write(text string) {
+	if s.rw != nil {
+		text = s.rw.rewrite(text)
+	}
+
+	_, _ = io.WriteString(s.w, text)
+
+	if s.flusher != nil {
+		s.flusher.Flush()
+	}
+}
+
+// streamSSEWithRewrite reverses fiction to real one SSE event at a time. A value
+// split across separate events is not rejoined (response direction, not a leak).
 func (h *proxyHandler) streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
-	flusher, canFlush := w.(http.Flusher)
+	sink := newSSESink(w, rw)
+
 	var lineBuf bytes.Buffer
+
 	buf := make([]byte, 4096)
 
 	for {
 		n, readErr := body.Read(buf)
 		if n > 0 {
 			lineBuf.Write(buf[:n])
-			h.flushCompleteEvents(&lineBuf, w, canFlush, flusher, rw)
+			flushCompleteEvents(&lineBuf, sink)
+
+			// Bound memory if an event never terminates.
+			if lineBuf.Len() > maxRespSize {
+				flushRemainder(&lineBuf, sink)
+				lineBuf.Reset()
+			}
 		}
 
 		if readErr != nil {
-			if lineBuf.Len() > 0 {
-				remaining := lineBuf.String()
-				if rw != nil {
-					remaining = rw.rewrite(remaining)
-				}
-
-				_, _ = io.WriteString(w, remaining)
-
-				if canFlush {
-					flusher.Flush()
-				}
-			}
+			flushRemainder(&lineBuf, sink)
 
 			break
 		}
 	}
+}
+
+// flushRemainder writes whatever is left in buf after the stream ends, so a
+// partial trailing event still gets rewritten rather than dropped.
+func flushRemainder(buf *bytes.Buffer, sink sseSink) {
+	if buf.Len() == 0 {
+		return
+	}
+
+	sink.write(buf.String())
 }
 
 func findEventBoundary(data []byte) (int, int) {
@@ -249,40 +297,31 @@ func findEventBoundary(data []byte) (int, int) {
 	}
 }
 
-func (h *proxyHandler) flushCompleteEvents(
-	buf *bytes.Buffer,
-	w http.ResponseWriter,
-	canFlush bool,
-	flusher http.Flusher,
-	rw *rewriter,
-) {
+// flushCompleteEvents drains every whole SSE event currently in buf,
+// leaving any trailing partial event for the next read.
+func flushCompleteEvents(buf *bytes.Buffer, sink sseSink) {
 	for {
 		data := buf.Bytes()
-		idx, bLen := findEventBoundary(data)
 
+		idx, bLen := findEventBoundary(data)
 		if idx < 0 {
 			break
 		}
 
-		event := string(data[:idx+bLen])
-		if rw != nil {
-			event = rw.rewrite(event)
-		}
-
-		_, _ = io.WriteString(w, event)
-
-		if canFlush {
-			flusher.Flush()
-		}
-
+		sink.write(string(data[:idx+bLen]))
 		buf.Next(idx + bLen)
 	}
 }
 
 func (h *proxyHandler) forwardWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
-	respBody, err := io.ReadAll(body)
+	respBody, err := io.ReadAll(io.LimitReader(body, maxRespSize+1))
 	if err != nil {
 		return
+	}
+
+	if len(respBody) > maxRespSize {
+		logger.Warn("response exceeded rewrite limit; truncating", "limit", maxRespSize)
+		respBody = respBody[:maxRespSize]
 	}
 
 	text := string(respBody)
@@ -316,10 +355,30 @@ func (h *proxyHandler) forwardRaw(w http.ResponseWriter, body io.Reader) {
 }
 
 func responseRewriter() *rewriter {
-	eng := getEngagement()
+	eng := currentEngagement()
 	if eng == "" {
 		return nil
 	}
 
-	return proxyCache.getRewriter(engagementDir(eng), "f2r")
+	return proxyCache.getRewriter(engagementDir(eng), directionF2R)
+}
+
+// anonymizeUpstreamBody rewrites a body's real values to fiction before it leaves.
+// It fails closed: no engagement / unreadable / empty mappings return an error.
+func anonymizeUpstreamBody(body []byte) ([]byte, error) {
+	eng := currentEngagement()
+	if eng == "" {
+		return nil, errors.New("no active engagement (run: tanuki add <domain>)")
+	}
+
+	rw, err := proxyCache.rewriterOrError(engagementDir(eng), directionR2F)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read mappings: %w", err)
+	}
+
+	if rw == nil {
+		return nil, errors.New("no target mappings configured (run: tanuki add <domain>)")
+	}
+
+	return []byte(rw.rewrite(string(body))), nil
 }
