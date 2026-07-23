@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a capability or change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you unable to do today? Describe the engagement scenario, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should Tanuki do instead?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Rewriting engine (mappings, matching)
+        - Auto-detection (domains, IPs, TLDs)
+        - Terminology dictionary
+        - Proxy / streaming
+        - Claude Code hooks
+        - CLI / engagements
+        - Container / packaging
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: opsec
+    attributes:
+      label: OpSec impact
+      description: |
+        Could this cause real target data to reach the model, or make a leak
+        harder to notice? Say so plainly — it decides whether this is viable.
