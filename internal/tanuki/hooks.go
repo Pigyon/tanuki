@@ -7,9 +7,43 @@ import (
 	"os"
 )
 
-var hookDryRun bool
+// Hook event names. Claude Code silently ignores the payload if hookEventName
+// does not match exactly, so these are constants, not inline strings.
+const (
+	eventPreToolUse       = "PreToolUse"
+	eventPostToolUse      = "PostToolUse"
+	eventUserPromptSubmit = "UserPromptSubmit"
+)
+
+var isHookDryRun bool
+
+// emitHookOutput writes the hookSpecificOutput envelope. Event-specific keys
+// must nest here beside hookEventName; at the top level they are ignored.
+func emitHookOutput(eventName string, fields map[string]interface{}) {
+	payload := map[string]interface{}{"hookEventName": eventName}
+
+	for k, v := range fields {
+		payload[k] = v
+	}
+
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+		"hookSpecificOutput": payload,
+	})
+}
 
 func cmdHook(args []string) {
+	// A hook must never exit non-zero on a crash: exit 2 tells Claude Code to
+	// block the tool. Degrade a panic to a no-op; the proxy still anonymizes.
+	defer func() {
+		if r := recover(); r != nil {
+			if logger != nil {
+				logger.Error("hook panic recovered", "panic", r)
+			}
+
+			fmt.Print("{}")
+		}
+	}()
+
 	if len(args) == 0 {
 		fatal("Usage: tanuki hook [--dry-run] <pre-tool-use|post-tool-use|user-prompt-submit>")
 	}
@@ -18,7 +52,7 @@ func cmdHook(args []string) {
 
 	for _, a := range args {
 		if a == "--dry-run" {
-			hookDryRun = true
+			isHookDryRun = true
 		} else {
 			filtered = append(filtered, a)
 		}
@@ -69,7 +103,18 @@ func readHookInput() (string, map[string]interface{}, bool) {
 	return eng, data, true
 }
 
-//nolint:funlen // switch statement is long but simple
+// toolInputFields lists, per tool, which tool_input fields can carry target
+// data and therefore need fiction->real rewriting before the tool runs.
+var toolInputFields = map[string][]string{
+	"Bash":     {"command"},
+	"Edit":     {"file_path", "old_string", "new_string"},
+	"Write":    {"file_path", "content"},
+	"WebFetch": {"url"},
+	"Grep":     {"pattern", "path"},
+	"Glob":     {"pattern", "path"},
+	"Read":     {"file_path"},
+}
+
 func hookPreToolUse() {
 	eng, data, ok := readHookInput()
 	if !ok {
@@ -92,7 +137,7 @@ func hookPreToolUse() {
 		return
 	}
 
-	f2r := newRewriter(mappings, "f2r")
+	f2r := newRewriter(mappings, directionF2R)
 	changed := false
 
 	rewrite := func(field string) {
@@ -107,34 +152,22 @@ func hookPreToolUse() {
 		}
 	}
 
-	switch toolName {
-	case "Bash":
-		rewrite("command")
-	case "Edit":
-		rewrite("file_path")
-		rewrite("old_string")
-		rewrite("new_string")
-	case "Write":
-		rewrite("file_path")
-		rewrite("content")
-	case "WebFetch":
-		rewrite("url")
-	case "Grep", "Glob":
-		rewrite("pattern")
-		rewrite("path")
-	case "Read":
-		rewrite("file_path")
+	for _, field := range toolInputFields[toolName] {
+		rewrite(field)
 	}
 
-	if changed {
-		if hookDryRun {
-			logger.Info("dry-run: would rewrite tool input", "tool", toolName)
-		}
-
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{"updatedInput": toolInput})
-	} else {
+	if !changed {
 		fmt.Print("{}")
+		return
 	}
+
+	if isHookDryRun {
+		logger.Info("dry-run: would rewrite tool input", "tool", toolName)
+	}
+
+	// permissionDecision is omitted so rewriting the args does not also approve
+	// the call and remove the operator's permission prompt.
+	emitHookOutput(eventPreToolUse, map[string]interface{}{"updatedInput": toolInput})
 }
 
 func hookPostToolUse() {
@@ -154,7 +187,7 @@ func hookPostToolUse() {
 	newIPs := findNewPublicIPs(toolOutput, engDir)
 	newDomains := findNewDomains(toolOutput, engDir)
 
-	if hookDryRun {
+	if isHookDryRun {
 		for _, ip := range newIPs {
 			logger.Info("dry-run: would auto-map IP", "ip", ip)
 		}
@@ -182,16 +215,17 @@ func hookPostToolUse() {
 		return
 	}
 
-	rewritten := newRewriter(mappings, "r2f").rewrite(toolOutput)
-	if rewritten != toolOutput {
-		if hookDryRun {
-			logger.Info("dry-run: would rewrite tool output", "delta_chars", len(rewritten)-len(toolOutput))
-		}
-
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{"updatedToolResult": rewritten})
-	} else {
+	rewritten := newRewriter(mappings, directionR2F).rewrite(toolOutput)
+	if rewritten == toolOutput {
 		fmt.Print("{}")
+		return
 	}
+
+	if isHookDryRun {
+		logger.Info("dry-run: would rewrite tool output", "delta_chars", len(rewritten)-len(toolOutput))
+	}
+
+	emitHookOutput(eventPostToolUse, map[string]interface{}{"updatedToolOutput": rewritten})
 }
 
 func hookUserPromptSubmit() {
@@ -200,7 +234,12 @@ func hookUserPromptSubmit() {
 		return
 	}
 
-	promptText, _ := data["prompt_text"].(string)
+	// Claude Code sends the prompt as "prompt"; "prompt_text" is a fallback.
+	promptText, _ := data["prompt"].(string)
+	if promptText == "" {
+		promptText, _ = data["prompt_text"].(string)
+	}
+
 	if promptText == "" {
 		fmt.Print("{}")
 		return
@@ -211,7 +250,7 @@ func hookUserPromptSubmit() {
 	newDomains := findNewDomains(promptText, engDir)
 	newIPs := findNewPublicIPs(promptText, engDir)
 
-	if hookDryRun {
+	if isHookDryRun {
 		for _, d := range newDomains {
 			logger.Info("dry-run: would auto-map domain", "domain", d)
 		}
@@ -233,11 +272,15 @@ func hookUserPromptSubmit() {
 		}
 	}
 
-	if len(newDomains) > 0 {
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
-			"additionalContext": fmt.Sprintf("[tanuki] Auto-mapped %d new domain(s)", len(newDomains)),
-		})
-	} else {
+	if len(newDomains) == 0 && len(newIPs) == 0 {
 		fmt.Print("{}")
+		return
 	}
+
+	emitHookOutput(eventUserPromptSubmit, map[string]interface{}{
+		"additionalContext": fmt.Sprintf(
+			"[tanuki] Auto-mapped %d new domain(s) and %d new IP(s)",
+			len(newDomains), len(newIPs),
+		),
+	})
 }

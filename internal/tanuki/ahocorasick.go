@@ -2,6 +2,16 @@ package tanuki
 
 import "sort"
 
+// fold lowercases an ASCII byte for case-insensitive matching, so a mixed-case
+// target ("aMaZoN") is not missed and leaked. Matches slice the original text.
+func fold(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+
+	return b
+}
+
 type acNode struct {
 	children map[byte]*acNode
 	fail     *acNode
@@ -35,7 +45,7 @@ func (m *acMachine) insert(pattern string, index int) {
 	node := m.root
 
 	for i := range len(pattern) {
-		b := pattern[i]
+		b := fold(pattern[i])
 
 		child, ok := node.children[b]
 		if !ok {
@@ -95,7 +105,7 @@ func (m *acMachine) search(text string) []acMatch {
 	node := m.root
 
 	for i := range len(text) {
-		b := text[i]
+		b := fold(text[i])
 
 		for node != m.root {
 			if _, ok := node.children[b]; ok {

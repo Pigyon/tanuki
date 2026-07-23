@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+// loadEnvConfig pre-seeds the engagement from TANUKI_* environment
+// variables, so an engagement can be fully configured via compose.yaml.
 func loadEnvConfig(engDir string) error {
 	if org := os.Getenv("TANUKI_FICTION_ORG"); org != "" {
 		if err := writeFileContent(filepath.Join(engDir, "fiction_org"), org); err != nil {
@@ -15,45 +17,80 @@ func loadEnvConfig(engDir string) error {
 		}
 	}
 
-	if domains := os.Getenv("TANUKI_DOMAINS"); domains != "" {
-		for _, d := range strings.Split(domains, ",") {
-			d = strings.TrimSpace(d)
-			if d != "" && !mappingExists(engDir, "domain", extractBaseDomain(d)) {
-				if err := addDomain(engDir, d, ""); err != nil {
-					return err
-				}
+	if err := seedEnvDomains(engDir, os.Getenv("TANUKI_DOMAINS")); err != nil {
+		return err
+	}
 
-				logger.Info("pre-seeded domain from env", "domain", d)
-			}
+	if err := seedEnvIPs(engDir, os.Getenv("TANUKI_IPS")); err != nil {
+		return err
+	}
+
+	return seedEnvRules(engDir, os.Getenv("TANUKI_RULES"))
+}
+
+func seedEnvDomains(engDir, domains string) error {
+	if domains == "" {
+		return nil
+	}
+
+	for _, d := range strings.Split(domains, ",") {
+		d = strings.TrimSpace(d)
+		if d == "" || mappingExists(engDir, "domain", extractBaseDomain(d)) {
+			continue
+		}
+
+		if err := addDomain(engDir, d, ""); err != nil {
+			return err
+		}
+
+		logger.Info("pre-seeded domain from env", "domain", d)
+	}
+
+	return nil
+}
+
+func seedEnvIPs(engDir, ips string) error {
+	if ips == "" {
+		return nil
+	}
+
+	for _, ip := range strings.Split(ips, ",") {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+
+		if err := addIPMapping(engDir, ip); err != nil {
+			return err
 		}
 	}
 
-	if ips := os.Getenv("TANUKI_IPS"); ips != "" {
-		for _, ip := range strings.Split(ips, ",") {
-			ip = strings.TrimSpace(ip)
-			if ip != "" {
-				if err := addIPMapping(engDir, ip); err != nil {
-					return err
-				}
-			}
-		}
+	return nil
+}
+
+// seedEnvRules parses semicolon-separated real|fiction pairs.
+func seedEnvRules(engDir, rules string) error {
+	if rules == "" {
+		return nil
 	}
 
-	if rules := os.Getenv("TANUKI_RULES"); rules != "" {
-		for _, rule := range strings.Split(rules, ";") {
-			rule = strings.TrimSpace(rule)
-			parts := strings.SplitN(rule, "|", 2)
+	for _, rule := range strings.Split(rules, ";") {
+		parts := strings.SplitN(strings.TrimSpace(rule), "|", 2)
 
-			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
-				if !mappingExists(engDir, "custom", parts[0]) {
-					if err := addMapping(engDir, "custom", parts[0], parts[1]); err != nil {
-						return err
-					}
-
-					logger.Info("pre-seeded rule from env", "real", parts[0], "fiction", parts[1])
-				}
-			}
+		isMalformed := len(parts) != 2 || parts[0] == "" || parts[1] == ""
+		if isMalformed {
+			continue
 		}
+
+		if mappingExists(engDir, "custom", parts[0]) {
+			continue
+		}
+
+		if err := addMapping(engDir, "custom", parts[0], parts[1]); err != nil {
+			return err
+		}
+
+		logger.Info("pre-seeded rule from env", "real", parts[0], "fiction", parts[1])
 	}
 
 	return nil
@@ -76,7 +113,7 @@ func parseArgs(args []string) (positional, fictionOrg string) {
 		}
 	}
 
-	return
+	return positional, fictionOrg
 }
 
 func cmdInit(args []string) {
@@ -94,7 +131,7 @@ func cmdInit(args []string) {
 		fatal(fmt.Sprintf("engagement %q already exists, use: tanuki activate %s", name, name))
 	}
 
-	if err := os.MkdirAll(engDir, 0755); err != nil {
+	if err := os.MkdirAll(engDir, 0o750); err != nil {
 		fatal(fmt.Sprintf("creating directory %s: %v", engDir, err))
 	}
 
@@ -107,6 +144,10 @@ func cmdInit(args []string) {
 	}
 
 	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), "2"); err != nil {
+		fatal(err.Error())
+	}
+
+	if err := writeFileContent(filepath.Join(engDir, "org_counter"), "1"); err != nil {
 		fatal(err.Error())
 	}
 
@@ -179,18 +220,18 @@ func cmdAddRule(args []string) {
 	}
 
 	engDir := engagementDir(eng)
-	real, fiction := args[0], args[1]
+	realVal, fiction := args[0], args[1]
 
-	if mappingExists(engDir, "custom", real) {
-		fmt.Printf("[tanuki] Rule already exists for %q\n", real)
+	if mappingExists(engDir, "custom", realVal) {
+		fmt.Printf("[tanuki] Rule already exists for %q\n", realVal)
 		return
 	}
 
-	if err := addMapping(engDir, "custom", real, fiction); err != nil {
+	if err := addMapping(engDir, "custom", realVal, fiction); err != nil {
 		fatal(err.Error())
 	}
 
-	fmt.Printf("[tanuki] Added rule: %q -> %q\n", real, fiction)
+	fmt.Printf("[tanuki] Added rule: %q -> %q\n", realVal, fiction)
 }
 
 func cmdMap() {
@@ -200,7 +241,7 @@ func cmdMap() {
 }
 
 func cmdStatus() {
-	eng := getEngagement()
+	eng := currentEngagement()
 	if eng == "" {
 		fmt.Println("No active engagement.")
 		return
@@ -214,12 +255,12 @@ func cmdStatus() {
 	fmt.Printf("Engagement:   %s\n", eng)
 	fmt.Printf("Fiction org:  %s\n", fictionOrg)
 	fmt.Printf("Mappings:     %d\n", len(mappings))
-	fmt.Printf("Proxy port:   %s\n", getProxyPort())
+	fmt.Printf("Proxy port:   %s\n", proxyPort())
 	fmt.Println("====================")
 }
 
 func cmdList() {
-	current := getEngagement()
+	current := currentEngagement()
 
 	entries, err := os.ReadDir(dataDir())
 	if err != nil {
@@ -283,7 +324,54 @@ func cmdReset(args []string) {
 	}
 }
 
-//nolint:funlen // removeTanukiSettings handles complex JSON merge logic
+// stripTanukiHooks removes tanuki's hook entries from a parsed settings
+// map, dropping hook types (and the whole "hooks" key) left empty.
+func stripTanukiHooks(settings map[string]interface{}) {
+	hooks, ok := settings["hooks"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	for hookType, entries := range hooks {
+		arr, ok := entries.([]interface{})
+		if !ok {
+			continue
+		}
+
+		var filtered []interface{}
+
+		for _, e := range arr {
+			if !isTanukiHookEntry(e) {
+				filtered = append(filtered, e)
+			}
+		}
+
+		if len(filtered) > 0 {
+			hooks[hookType] = filtered
+		} else {
+			delete(hooks, hookType)
+		}
+	}
+
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	}
+}
+
+// stripTanukiEnv removes the proxy env var tanuki injected.
+func stripTanukiEnv(settings map[string]interface{}) {
+	env, ok := settings["env"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	delete(env, "ANTHROPIC_BASE_URL")
+
+	if len(env) == 0 {
+		delete(settings, "env")
+	}
+}
+
 func removeTanukiSettings(path string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -294,48 +382,18 @@ func removeTanukiSettings(path string) {
 
 	if json.Unmarshal(data, &settings) != nil {
 		_ = os.Remove(path)
+
 		fmt.Println("[tanuki] Removed .claude/settings.json")
 
 		return
 	}
 
-	if hooks, ok := settings["hooks"].(map[string]interface{}); ok {
-		for hookType, entries := range hooks {
-			arr, ok := entries.([]interface{})
-			if !ok {
-				continue
-			}
-
-			var filtered []interface{}
-
-			for _, e := range arr {
-				if !isTanukiHookEntry(e) {
-					filtered = append(filtered, e)
-				}
-			}
-
-			if len(filtered) > 0 {
-				hooks[hookType] = filtered
-			} else {
-				delete(hooks, hookType)
-			}
-		}
-
-		if len(hooks) == 0 {
-			delete(settings, "hooks")
-		}
-	}
-
-	if env, ok := settings["env"].(map[string]interface{}); ok {
-		delete(env, "ANTHROPIC_BASE_URL")
-
-		if len(env) == 0 {
-			delete(settings, "env")
-		}
-	}
+	stripTanukiHooks(settings)
+	stripTanukiEnv(settings)
 
 	if len(settings) == 0 {
 		_ = os.Remove(path)
+
 		fmt.Println("[tanuki] Removed .claude/settings.json (was tanuki-only)")
 
 		return
@@ -346,7 +404,7 @@ func removeTanukiSettings(path string) {
 		return
 	}
 
-	if err := writeFileContent(path, string(out)); err != nil {
+	if err := writeSharedFile(path, string(out)); err != nil {
 		logger.Warn("could not update settings", "error", err)
 	}
 
@@ -371,7 +429,7 @@ func cmdActivate(args []string) {
 }
 
 func configureHooks() error {
-	if err := os.MkdirAll(".claude", 0755); err != nil {
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
 		return fmt.Errorf("creating .claude directory: %w", err)
 	}
 
@@ -442,7 +500,7 @@ func configureHooks() error {
 		env = make(map[string]interface{})
 	}
 
-	env["ANTHROPIC_BASE_URL"] = "http://localhost:" + getProxyPort()
+	env["ANTHROPIC_BASE_URL"] = "http://localhost:" + proxyPort()
 	settings["env"] = env
 
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -450,7 +508,7 @@ func configureHooks() error {
 		return fmt.Errorf("marshaling settings: %w", err)
 	}
 
-	return writeFileContent(settingsPath, string(data))
+	return writeSharedFile(settingsPath, string(data))
 }
 
 func isTanukiHookEntry(entry interface{}) bool {
@@ -522,11 +580,7 @@ func cmdExport(args []string) {
 	}
 
 	for _, m := range mappings {
-		exported.Mappings = append(exported.Mappings, exportedMap{
-			Type:    m.Type,
-			Real:    m.Real,
-			Fiction: m.Fiction,
-		})
+		exported.Mappings = append(exported.Mappings, exportedMap(m))
 	}
 
 	data, err := json.MarshalIndent(exported, "", "  ")
@@ -537,32 +591,49 @@ func cmdExport(args []string) {
 	fmt.Println(string(data))
 }
 
-func cmdImport(args []string) {
-	if len(args) == 0 {
-		fatal("Usage: tanuki import <file.json>")
-	}
-
-	data, err := os.ReadFile(args[0])
+// readExport loads and validates an exported engagement file.
+func readExport(path string) exportedEngagement {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		fatal(fmt.Sprintf("reading %s: %v", args[0], err))
+		fatal(fmt.Sprintf("reading %s: %v", path, err))
 	}
 
 	var imported exportedEngagement
 	if err := json.Unmarshal(data, &imported); err != nil {
-		fatal(fmt.Sprintf("parsing %s: %v", args[0], err))
+		fatal(fmt.Sprintf("parsing %s: %v", path, err))
 	}
 
 	if imported.Name == "" {
 		fatal("export file missing engagement name")
 	}
 
+	return imported
+}
+
+// mappingsFileContent renders mapping entries as a mappings.conf body.
+func mappingsFileContent(mappings []exportedMap) string {
+	lines := []string{
+		"# Tanuki engagement mappings",
+		"# Format: TYPE|REAL_VALUE|FICTION_VALUE",
+	}
+
+	for _, m := range mappings {
+		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
+	}
+
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func cmdImport(args []string) {
+	if len(args) == 0 {
+		fatal("Usage: tanuki import <file.json>")
+	}
+
+	imported := readExport(args[0])
+
 	engDir := engagementDir(imported.Name)
 	if fileExists(engDir) {
 		fatal(fmt.Sprintf("engagement %q already exists, use a different name or delete first", imported.Name))
-	}
-
-	if err := os.MkdirAll(engDir, 0755); err != nil {
-		fatal(fmt.Sprintf("creating directory %s: %v", engDir, err))
 	}
 
 	fictionOrg := imported.FictionOrg
@@ -570,30 +641,20 @@ func cmdImport(args []string) {
 		fictionOrg = "DEVTARGET"
 	}
 
-	if err := writeFileContent(filepath.Join(engDir, "fiction_org"), fictionOrg); err != nil {
+	if err := seedEngagement(engDir, fictionOrg); err != nil {
 		fatal(err.Error())
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "port_counter"), portStart()); err != nil {
-		fatal(err.Error())
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), "2"); err != nil {
-		fatal(err.Error())
-	}
-
-	var lines []string
-
-	lines = append(lines, "# Tanuki engagement mappings", "# Format: TYPE|REAL_VALUE|FICTION_VALUE")
-
-	for _, m := range imported.Mappings {
-		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
 	}
 
 	if err := writeFileContent(
 		filepath.Join(engDir, "mappings.conf"),
-		strings.Join(lines, "\n")+"\n",
+		mappingsFileContent(imported.Mappings),
 	); err != nil {
+		fatal(err.Error())
+	}
+
+	// Advance the counters past the imported mappings, or the next allocation
+	// collides with an imported fiction value.
+	if err := resetCountersFromMappings(engDir); err != nil {
 		fatal(err.Error())
 	}
 
@@ -604,8 +665,10 @@ func cmdImport(args []string) {
 	fmt.Printf("[tanuki] Imported engagement %q (%d mappings)\n", imported.Name, len(imported.Mappings))
 }
 
-const tanukiMarkerStart = "<!-- TANUKI:START -->"
-const tanukiMarkerEnd = "<!-- TANUKI:END -->"
+const (
+	tanukiMarkerStart = "<!-- TANUKI:START -->"
+	tanukiMarkerEnd   = "<!-- TANUKI:END -->"
+)
 
 func removeTanukiClaudeMD(path string) {
 	content := readFileContent(path)
@@ -621,9 +684,10 @@ func removeTanukiClaudeMD(path string) {
 
 	if remaining == "" {
 		_ = os.Remove(path)
+
 		fmt.Println("[tanuki] Removed .claude/CLAUDE.md")
 	} else {
-		if err := writeFileContent(path, remaining+"\n"); err != nil {
+		if err := writeSharedFile(path, remaining+"\n"); err != nil {
 			logger.Warn("could not update CLAUDE.md", "error", err)
 		}
 
@@ -654,7 +718,7 @@ func generateClaudeMD(engDir string) error {
 	existing := readFileContent(path)
 
 	if existing == "" {
-		return writeFileContent(path, section.String())
+		return writeSharedFile(path, section.String())
 	}
 
 	startIdx := strings.Index(existing, tanukiMarkerStart)
@@ -662,8 +726,8 @@ func generateClaudeMD(engDir string) error {
 
 	if startIdx >= 0 && endIdx > startIdx {
 		updated := existing[:startIdx] + section.String() + existing[endIdx+len(tanukiMarkerEnd):]
-		return writeFileContent(path, strings.TrimSpace(updated)+"\n")
+		return writeSharedFile(path, strings.TrimSpace(updated)+"\n")
 	}
 
-	return writeFileContent(path, existing+"\n\n"+section.String())
+	return writeSharedFile(path, existing+"\n\n"+section.String())
 }

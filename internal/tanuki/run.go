@@ -1,6 +1,7 @@
 package tanuki
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,7 +9,41 @@ import (
 	"sync/atomic"
 )
 
+// exitUsage is for bad invocation; exitError for runtime failures. Hooks never
+// reach exitUsage, so a crash can't exit 2 and block a tool in Claude Code.
+const (
+	exitError = 1
+	exitUsage = 2
+)
+
 var lastKnownEngagement atomic.Value
+
+// commands maps each command name to its handler, which receives the args
+// following the command name.
+var commands = map[string]func(args []string){
+	"init":      cmdInit,
+	"add":       cmdAdd,
+	"add-ip":    cmdAddIP,
+	"add-rule":  cmdAddRule,
+	"map":       func([]string) { cmdMap() },
+	"status":    func([]string) { cmdStatus() },
+	"list":      func([]string) { cmdList() },
+	"activate":  cmdActivate,
+	"test":      cmdTest,
+	"terms":     func([]string) { cmdTerms() },
+	"hook":      cmdHook,
+	"setup":     func([]string) { cmdSetup() },
+	"export":    cmdExport,
+	"import":    cmdImport,
+	"reset":     cmdReset,
+	"proxy":     func([]string) { runProxy() },
+	"version":   func([]string) { cmdVersion() },
+	"--version": func([]string) { cmdVersion() },
+	"-v":        func([]string) { cmdVersion() },
+	"help":      func([]string) { usage() },
+	"--help":    func([]string) { usage() },
+	"-h":        func([]string) { usage() },
+}
 
 // Run is the CLI entrypoint: it parses os.Args and dispatches to the
 // matching command, exiting the process on error.
@@ -17,49 +52,17 @@ func Run() {
 
 	if len(os.Args) < 2 {
 		usage()
-		os.Exit(1)
+		os.Exit(exitUsage)
 	}
 
-	switch os.Args[1] {
-	case "init":
-		cmdInit(os.Args[2:])
-	case "add":
-		cmdAdd(os.Args[2:])
-	case "add-ip":
-		cmdAddIP(os.Args[2:])
-	case "add-rule":
-		cmdAddRule(os.Args[2:])
-	case "map":
-		cmdMap()
-	case "status":
-		cmdStatus()
-	case "list":
-		cmdList()
-	case "activate":
-		cmdActivate(os.Args[2:])
-	case "test":
-		cmdTest(os.Args[2:])
-	case "terms":
-		cmdTerms()
-	case "hook":
-		cmdHook(os.Args[2:])
-	case "setup":
-		cmdSetup()
-	case "export":
-		cmdExport(os.Args[2:])
-	case "import":
-		cmdImport(os.Args[2:])
-	case "reset":
-		cmdReset(os.Args[2:])
-	case "proxy":
-		runProxy()
-	case "help", "--help", "-h":
-		usage()
-	default:
+	handler, ok := commands[os.Args[1]]
+	if !ok {
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
 		usage()
-		os.Exit(1)
+		os.Exit(exitUsage)
 	}
+
+	handler(os.Args[2:])
 }
 
 func usage() {
@@ -81,6 +84,7 @@ Commands:
   export [name]                     Export engagement as JSON
   import <file.json>                Import engagement from JSON
   reset [--data]                    Remove hooks (--data also wipes engagements)
+  version                           Show version and build info
   help                              Show this help
 
 Workflow:
@@ -102,8 +106,8 @@ func cmdTest(args []string) {
 	}
 
 	mappings := loadMappings(engagementDir(eng))
-	r2f := newRewriter(mappings, "r2f")
-	f2r := newRewriter(mappings, "f2r")
+	r2f := newRewriter(mappings, directionR2F)
+	f2r := newRewriter(mappings, directionF2R)
 
 	fmt.Println("=== Real -> Fiction ===")
 	fmt.Println(r2f.rewrite(text))
@@ -155,68 +159,52 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func dataDir() string      { return envOr("TANUKI_DATA", "data") }
-func getProxyPort() string { return envOr("TANUKI_PROXY_PORT", "18080") }
-func portStart() string    { return envOr("TANUKI_PORT_START", "9000") }
+func dataDir() string   { return envOr("TANUKI_DATA", "data") }
+func proxyPort() string { return envOr("TANUKI_PROXY_PORT", "18080") }
+func portStart() string { return envOr("TANUKI_PORT_START", "9000") }
 
-// getEngagement reads the active engagement, falling back to the last
-// known value when the file is empty or missing (guards against a
-// concurrent truncate-then-write race exposing an empty read).
-func getEngagement() string {
+// currentEngagement reads the active engagement, falling back to lastKnown on an
+// empty/missing read. It validates the (user-writable) name and never fatals.
+func currentEngagement() string {
 	data, err := os.ReadFile(filepath.Join(dataDir(), "current_engagement"))
 	if err == nil {
-		if eng := strings.TrimSpace(string(data)); eng != "" {
+		if eng := strings.TrimSpace(string(data)); eng != "" && validateEngagementName(eng) == nil {
 			lastKnownEngagement.Store(eng)
 			return eng
 		}
 	}
 
 	if v := lastKnownEngagement.Load(); v != nil {
-		return v.(string)
+		if eng, ok := v.(string); ok {
+			return eng
+		}
 	}
 
 	return ""
 }
 
+var errNoEngagement = errors.New("no active engagement, run: tanuki init <name>")
+
 func requireEngagement() (string, error) {
-	eng := getEngagement()
+	eng := currentEngagement()
 	if eng == "" {
-		return "", fmt.Errorf("no active engagement, run: tanuki init <name>")
+		return "", errNoEngagement
 	}
 
 	return eng, nil
 }
 
 func ensureEngagement() (string, error) {
-	eng := getEngagement()
+	eng := currentEngagement()
 	if eng != "" && fileExists(engagementDir(eng)) {
 		return eng, nil
 	}
 
 	name := "default"
+
 	engDir := engagementDir(name)
-
 	if !fileExists(engDir) {
-		if err := os.MkdirAll(engDir, 0755); err != nil {
-			return "", fmt.Errorf("creating directory %s: %w", engDir, err)
-		}
-
-		if err := writeFileContent(filepath.Join(engDir, "fiction_org"), "DEVTARGET"); err != nil {
-			return "", err
-		}
-
-		if err := writeFileContent(filepath.Join(engDir, "port_counter"), portStart()); err != nil {
-			return "", err
-		}
-
-		if err := writeFileContent(filepath.Join(engDir, "ip_counter"), "2"); err != nil {
-			return "", err
-		}
-
-		if err := writeFileContent(
-			filepath.Join(engDir, "mappings.conf"),
-			"# Tanuki engagement mappings\n# Format: TYPE|REAL_VALUE|FICTION_VALUE\n",
-		); err != nil {
+		if err := seedEngagement(engDir, "DEVTARGET"); err != nil {
 			return "", err
 		}
 	}
@@ -228,8 +216,48 @@ func ensureEngagement() (string, error) {
 	return name, nil
 }
 
+// seedEngagement creates engDir and writes the initial counter and mapping
+// files for a new engagement.
+func seedEngagement(engDir, fictionOrg string) error {
+	if err := os.MkdirAll(engDir, 0o750); err != nil {
+		return fmt.Errorf("creating directory %s: %w", engDir, err)
+	}
+
+	files := []struct{ name, content string }{
+		{"fiction_org", fictionOrg},
+		{"port_counter", portStart()},
+		{"ip_counter", "2"},
+		{"org_counter", "1"},
+		{"mappings.conf", "# Tanuki engagement mappings\n# Format: TYPE|REAL_VALUE|FICTION_VALUE\n"},
+	}
+
+	for _, f := range files {
+		if err := writeFileContent(filepath.Join(engDir, f.name), f.content); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// engagementDir is a pure path join with no validation; callers with an
+// untrusted name must run it through validateEngagementName first.
 func engagementDir(eng string) string {
 	return filepath.Join(dataDir(), eng)
+}
+
+// validateEngagementName rejects names that would escape the data directory or
+// are unsafe as a single path component (CLI args, imports, the active marker).
+func validateEngagementName(name string) error {
+	if name == "" {
+		return errors.New("engagement name is empty")
+	}
+
+	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return fmt.Errorf("invalid engagement name %q", name)
+	}
+
+	return nil
 }
 
 func readFileContent(path string) string {
@@ -241,8 +269,20 @@ func readFileContent(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// writeFileContent writes /data engagement state 0600: it holds the mapping
+// table, read only by tanuki, so it must not be world-readable.
 func writeFileContent(path, content string) error {
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return nil
+}
+
+// writeSharedFile writes host-readable .claude/ config (0644). The container
+// writes as root over a bind mount, so 0600 would hide it on native-Linux Docker.
+func writeSharedFile(path, content string) error {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 
@@ -253,15 +293,19 @@ func appendToFile(path, line string) error {
 	unlock := acquireFileLock(path)
 	defer unlock()
 
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", path, err)
 	}
 
-	defer f.Close()
-
 	if _, err := f.WriteString(line + "\n"); err != nil {
+		_ = f.Close()
+
 		return fmt.Errorf("writing to %s: %w", path, err)
+	}
+
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
 	}
 
 	return nil
@@ -279,5 +323,5 @@ func fatal(msg string) {
 		fmt.Fprintf(os.Stderr, "[tanuki] ERROR: %s\n", msg)
 	}
 
-	os.Exit(1)
+	os.Exit(exitError)
 }
