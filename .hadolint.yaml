@@ -1,0 +1,16 @@
+failure-threshold: warning
+
+ignored:
+  # DL3029: "Do not use --platform flag with FROM"
+  #
+  # Intentional. `FROM --platform=$BUILDPLATFORM golang:...` pins the
+  # *builder* stage to the native runner architecture and lets Go
+  # cross-compile via GOOS/GOARCH, which is the documented way to build
+  # multi-arch Go images. The rule targets hardcoded platforms
+  # (--platform=linux/amd64); $BUILDPLATFORM is the opposite of that and
+  # avoids QEMU emulation entirely.
+  - DL3029
+
+trustedRegistries:
+  - docker.io
+  - ghcr.io

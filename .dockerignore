@@ -1,5 +1,13 @@
-data/
-*.md
 .git/
-.gitignore
+.github/
 .claude/
+avatar/
+data/
+dist/
+*.md
+*.yaml
+.gitignore
+.gitattributes
+.golangci.yml
+LICENSE
+tanuki

@@ -1,0 +1,13 @@
+# Local development: build the image from source instead of pulling it.
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+#
+# Everything else (ports, volumes, env, hardening) is inherited from
+# compose.yaml, so this file only overrides how the image is produced.
+services:
+  tanuki:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: tanuki:dev
+    pull_policy: never

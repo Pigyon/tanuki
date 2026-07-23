@@ -1,9 +1,13 @@
 services:
   tanuki:
-    build: .
+    # Published image from GitHub Container Registry.
+    # Pin a release instead of latest for reproducibility:
+    #   TANUKI_TAG=v0.1.0 docker compose up -d
+    # To build from source instead, see compose.dev.yaml.
+    image: ghcr.io/pigyon/tanuki:${TANUKI_TAG:-latest}
     container_name: tanuki
     ports:
-      - "18080:18080"
+      - "127.0.0.1:18080:18080"
     volumes:
       - tanuki-data:/data
       - ./.claude:/workspace/.claude
