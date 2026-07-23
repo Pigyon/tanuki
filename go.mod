@@ -1,5 +1,5 @@
-module tanuki
+module github.com/Pigyon/tanuki
 
 go 1.25.0
 
-require golang.org/x/net v0.57.0 // indirect
+require golang.org/x/net v0.57.0
