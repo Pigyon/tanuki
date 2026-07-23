@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   concurrency: 4
   # Timeout for analysis
@@ -25,7 +27,7 @@ linters:
     # style
     - gocritic         # opinionated style: unnecessary conversions, range copies, redundant code
     - revive           # naming conventions, exported types, stuttered package names
-    - wsl              # whitespace and blank line rules for readability
+    - wsl_v5           # whitespace and blank line rules for readability (wsl was renamed in v2)
     - whitespace       # trailing whitespace, unnecessary blank lines
     - godot            # exported-symbol comments must end with a period
     - misspell         # common English misspellings in identifiers and comments
@@ -99,8 +101,21 @@ linters:
       - third_party$
       - testutils$
       - examples$
+    rules:
+      # G304: engagement file paths are built from engagementDir (which rejects
+      # traversal), fixed .claude locations, or the operator-supplied CLI import.
+      - path: internal/tanuki
+        linters:
+          - gosec
+        text: G304
+      # G306: .claude config is deliberately world-readable so the host user's
+      # Claude Code can read it across the container bind mount; it holds no secrets.
+      - path: internal/tanuki/run.go
+        linters:
+          - gosec
+        text: G306
 
-  linters-settings:
+  settings:
     dupl:
       threshold: 100  # lower => stricter (tokens)
     errcheck:
@@ -116,20 +131,21 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
-    wsl:
+    wsl_v5:
       allow-first-in-block: true
       allow-whole-block: false
       branch-max-lines: 2
 
 formatters:
+  # Formatters are opt-in: v2 has no `disable` key, anything not listed
+  # here simply does not run. Deliberately not enabled:
+  #   gci       - import grouping/ordering, gofumpt already handles it
+  #   goimports - import management, redundant with gofumpt
+  #   golines   - line wrapping, too opinionated, can break readability
+  #   swaggo    - swaggo comment formatting, only for swaggo users
   enable:
     - gofmt
     - gofumpt
-  disable:
-    - gci        # import grouping/ordering - gofumpt already handles standard grouping
-    - goimports  # import management - redundant with gofumpt
-    - golines    # line wrapping - too opinionated, can break readability
-    - swaggo     # swaggo comment formatting - only for swaggo users
   settings:
     gofumpt:
       extra-rules: true
