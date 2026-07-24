@@ -120,11 +120,7 @@ docker compose up -d
 claude
 ```
 
-That pulls the published image from GitHub Container Registry, so no Go toolchain and no build are needed. To pin a release instead of tracking `latest`:
-
-```bash
-TANUKI_TAG=v0.1.0 docker compose up -d
-```
+That pulls the latest published image from GitHub Container Registry, so no Go toolchain and no build are needed.
 
 To build from source instead of pulling:
 

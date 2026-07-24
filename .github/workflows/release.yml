@@ -45,6 +45,8 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Image tags are semver without the leading v (docker/metadata-action convention).
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
@@ -88,13 +90,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           cat > notes.md <<EOF
           ## Container image
 
           \`\`\`bash
-          docker pull ghcr.io/${IMAGE_NAME,,}:${TAG}
+          docker pull ghcr.io/${IMAGE_NAME,,}:${VERSION}
           \`\`\`
 
           Platforms: \`linux/amd64\`, \`linux/arm64\`
@@ -103,7 +106,7 @@ jobs:
           Pin this release in \`compose.yaml\`:
 
           \`\`\`bash
-          TANUKI_TAG=${TAG} docker compose up -d
+          TANUKI_TAG=${VERSION} docker compose up -d
           \`\`\`
 
           ---
