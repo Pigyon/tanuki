@@ -47,6 +47,8 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # Image tags are semver without the leading v (docker/metadata-action convention).
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # OCI repository paths must be lowercase; github.repository preserves owner case.
+          echo "image=${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
@@ -82,7 +84,7 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-name: ${{ env.REGISTRY }}/${{ steps.version.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
