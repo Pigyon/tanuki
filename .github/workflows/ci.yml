@@ -53,6 +53,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.6.1
+          # config verify fetches a JSON schema over the network and flakes on
+          # timeouts; `run` still parses+validates the config and lints the code.
+          verify: false
 
   vulncheck:
     name: Vulnerabilities

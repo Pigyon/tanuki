@@ -9,11 +9,15 @@
 
 **Proxy for AI-assisted security testing/privacy**
 
+[![Release](https://img.shields.io/github/v/release/Pigyon/tanuki?label=release&color=2E7B7E&sort=semver)](https://github.com/Pigyon/tanuki/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/Pigyon/tanuki/ci.yml?branch=master&label=CI&color=233246&logo=githubactions&logoColor=2088FF)](https://github.com/Pigyon/tanuki/actions/workflows/ci.yml)
+[![GHCR](https://img.shields.io/badge/ghcr.io-pigyon%2Ftanuki-233246?logo=github)](https://github.com/Pigyon/tanuki/pkgs/container/tanuki)
+
 [![Go](https://img.shields.io/badge/Go-1.25-233246?logo=go&logoColor=00ADD8)](https://go.dev)
 [![Docker](https://img.shields.io/badge/Docker-required-233246?logo=docker&logoColor=2496ED)](https://www.docker.com/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-integrated-233246?logo=anthropic&logoColor=D97757)](#quick-start)
-[![Image](https://img.shields.io/badge/image-scratch_~8MB-2E7B7E)](#architecture)
-[![License](https://img.shields.io/badge/License-MIT-374151)](#license)
+[![Image](https://img.shields.io/badge/image-scratch_~10MB-2E7B7E)](#architecture)
+[![License](https://img.shields.io/badge/License-Apache_2.0-374151)](LICENSE)
 
 </div>
 
@@ -33,6 +37,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
 - [Known limitations](#known-limitations)
+- [Fail-closed behaviour](#fail-closed-behaviour)
 - [Disclaimer](#disclaimer)
 - [License](#license)
 
@@ -59,7 +64,7 @@ flowchart TD
     end
 
     subgraph Container["DOCKER CONTAINER"]
-        P{"Tanuki Proxy<br/>[scratch ~8MB]"}:::proxy
+        P{"Tanuki Proxy<br/>[scratch ~10MB]"}:::proxy
         D[("( mappings volume )")]:::data
     end
 
@@ -88,26 +93,46 @@ flowchart TD
 
 You're testing `bounty.amazon.com`. Here's what Tanuki does:
 
-| You type (real)     | LLM sees (fiction)           |
-| ------------------- | ---------------------------- |
-| `bounty.amazon.com` | `localhost:9001`             |
-| `amazon.com`        | `localhost:9000`             |
-| `admin@amazon.com`  | `admin@devtarget.local`      |
-| `Amazon`            | `DEVTARGET`                  |
-| `52.94.236.248`     | `127.0.0.2`                  |
-| `/var/www/amazon/`  | `/dev/project/`              |
-| `s3://amazon-prod`  | `file:///tmp/devtarget-prod` |
-| `SQL injection`     | `parameterized query test`   |
-| `reverse shell`     | `remote debug session`       |
+| You type (real)         | LLM sees (fiction)           |
+| ----------------------- | ---------------------------- |
+| `amazon.com`            | `localhost:9000`             |
+| `bounty.amazon.com`     | `localhost:9002`             |
+| `any-other.amazon.com`  | `localhost:9001` (wildcard)  |
+| `admin@amazon.com`      | `admin@devtarget.local`      |
+| `Amazon`                | `DEVTARGET`                  |
+| `52.94.236.248`         | `127.0.0.3`                  |
+| `/var/www/amazon/`      | `/var/www/dev/devtarget/`    |
+| `s3://amazon-prod`      | `file:///tmp/devtarget-prod` |
+| `SQL injection`         | `parameterized query test`   |
+| `reverse shell`         | `remote debug session`       |
+
+Each target domain gets three mappings: the base domain, a wildcard for
+subdomains that have not been seen yet, and a dedicated mapping per
+subdomain as it is detected. The wildcard is what stops an unmapped host
+like `internal-admin.amazon.com` from leaking its label upstream.
 
 ## Quick start
 
 ```bash
+git clone https://github.com/Pigyon/tanuki.git
+cd tanuki
 docker compose up -d
 claude
 ```
 
-That's it. On startup the proxy auto-configures hooks, proxy env, and `CLAUDE.md` in `.claude/settings.json`. Domains, emails, and IPs are **auto-detected** from your conversation, so no manual target configuration is needed.
+That pulls the published image from GitHub Container Registry, so no Go toolchain and no build are needed. To pin a release instead of tracking `latest`:
+
+```bash
+TANUKI_TAG=v0.1.0 docker compose up -d
+```
+
+To build from source instead of pulling:
+
+```bash
+docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+```
+
+On startup the proxy auto-configures the Claude Code hooks and proxy env in `.claude/settings.json`, and writes the cover-story `.claude/CLAUDE.md`. Domains, emails, and IPs are **auto-detected** from your conversation, so no manual target configuration is needed.
 
 When you type _"check bounty.amazon.com for SQL injection"_, the `UserPromptSubmit` hook:
 
@@ -187,6 +212,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `export [name]`                     | Export an engagement as JSON                       |
 | `import <file.json>`                | Import an engagement from JSON                     |
 | `reset [--data]`                    | Remove hooks (`--data` also wipes engagements)     |
+| `version`                           | Show version and build info                        |
 | `proxy`                             | Run the proxy server (container entrypoint)        |
 
 ## What gets rewritten
@@ -199,7 +225,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | Org names       | Derived from domain                    | `DEVTARGET` (configurable) |
 | Emails          | Derived from domain                    | `user@devtarget.local`     |
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
-| Paths           | Derived from org name                  | `/dev/project/`            |
+| Paths           | Derived from org name                  | `/dev/devtarget/`          |
 | Cloud resources | Derived from org name                  | `file:///tmp/devtarget...` |
 | Ticket prefixes | Derived from org name                  | `DT-`                      |
 | Custom rules    | User-defined via env or CLI            | User-defined               |
@@ -228,7 +254,7 @@ Set in `compose.yaml`:
 
 ## Architecture
 
-**Container:** `scratch`-based image with a single static Go binary plus CA certs. No OS, no shell, no runtime, ~8MB total. All capabilities dropped, read-only filesystem, no privilege escalation.
+**Container:** `scratch`-based image with a single static Go binary plus CA certs. No OS, no shell, no runtime, ~10MB total. All capabilities dropped, read-only filesystem, no privilege escalation.
 
 **Everything runs in Docker.** The proxy, hooks, and CLI all execute inside the container; hooks are invoked by Claude Code via `docker exec`, so no host-side binary is needed.
 
@@ -239,7 +265,13 @@ Set in `compose.yaml`:
 - **No HTTPS on the proxy.** The proxy listens on plain HTTP. That's acceptable because it only accepts connections from localhost (Claude Code on the same machine); the upstream connection to the Anthropic API uses HTTPS.
 - **Literal string matching only.** Encoded forms (URL-encoded, base64, and similar) won't be caught by the Aho-Corasick automaton.
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
+- **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~75 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. Domains with unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
+- **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
+
+## Fail-closed behaviour
+
+The proxy will not forward a prompt it cannot anonymize. If a `/v1/messages` request arrives with no active engagement, or the mapping table is unreadable or empty, the proxy refuses it with `503` rather than leaking plaintext upstream. A brand-new engagement therefore blocks until it has at least one mapping — the `UserPromptSubmit` hook adds one automatically the moment your prompt mentions a target, so a normal session (where your first prompt names the target) is unaffected.
 
 ## Disclaimer
 
@@ -247,4 +279,4 @@ Tanuki is intended for authorized security testing only: engagements you have wr
 
 ## License
 
-MIT
+Apache 2.0
