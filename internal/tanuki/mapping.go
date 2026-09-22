@@ -41,13 +41,14 @@ type termEntry struct {
 
 type wildcardMapping struct {
 	suffix  string
+	base    string // suffix without the leading dot: the apex itself
 	fiction string
 }
 
 type rewriter struct {
 	ac        *acMachine
-	regex     []regexEntry
-	orgRegex  []regexEntry
+	terms     *alternationRewriter
+	orgs      *alternationRewriter
 	wildcards []wildcardMapping
 	// ipFictions maps a canonical real IP to its fiction, so every textual
 	// form of that address (zero-padded, IPv6-compressed) is rewritten.
@@ -57,11 +58,6 @@ type rewriter struct {
 	explicit map[string]bool
 }
 
-type regexEntry struct {
-	re *regexp.Regexp
-	to string
-}
-
 //go:embed terminology.json
 var terminologyJSON []byte
 
@@ -69,9 +65,9 @@ var terminologyJSON []byte
 var tldsJSON []byte
 
 var (
-	terminology         []termEntry
-	compiledTermRegexes []regexEntry
-	commonTLDs          map[string]bool
+	terminology  []termEntry
+	termRewriter *alternationRewriter
+	commonTLDs   map[string]bool
 )
 
 func init() {
@@ -89,18 +85,72 @@ func init() {
 		commonTLDs[tld] = true
 	}
 
-	sorted := make([]termEntry, len(terminology))
-	copy(sorted, terminology)
-	sort.Slice(sorted, func(i, j int) bool {
+	termRewriter = newAlternationRewriter(terminology)
+}
+
+// alternationRewriter applies a set of word-bounded literal rules in a single
+// pass. Running each rule as its own ReplaceAll dominated the cost of a
+// rewrite: the 29 terminology rules alone meant 29 full scans of every
+// request body and of every SSE event.
+type alternationRewriter struct {
+	re *regexp.Regexp
+	to map[string]string // lowercased match -> replacement
+}
+
+// newAlternationRewriter returns nil when there is nothing to rewrite, which
+// the rewrite method treats as a no-op.
+func newAlternationRewriter(rules []termEntry) *alternationRewriter {
+	sorted := make([]termEntry, len(rules))
+	copy(sorted, rules)
+
+	// Longest first: the alternation is leftmost-first, so a longer phrase
+	// has to be offered before any rule that is a prefix of it.
+	sort.SliceStable(sorted, func(i, j int) bool {
 		return len(sorted[i].From) > len(sorted[j].From)
 	})
 
-	for _, t := range sorted {
-		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(t.From) + `\b`)
-		if err == nil {
-			compiledTermRegexes = append(compiledTermRegexes, regexEntry{re: re, to: t.To})
+	to := make(map[string]string, len(sorted))
+	alts := make([]string, 0, len(sorted))
+
+	for _, r := range sorted {
+		key := strings.ToLower(r.From)
+		if key == "" {
+			continue
 		}
+
+		// First rule wins, matching what sequential passes did.
+		if _, dup := to[key]; dup {
+			continue
+		}
+
+		to[key] = r.To
+		alts = append(alts, regexp.QuoteMeta(r.From))
 	}
+
+	if len(alts) == 0 {
+		return nil
+	}
+
+	// QuoteMeta escapes every rule, so the pattern is always valid: compiling
+	// it must not fail quietly, or the rules would silently stop applying.
+	return &alternationRewriter{
+		re: regexp.MustCompile(`(?i)\b(?:` + strings.Join(alts, "|") + `)\b`),
+		to: to,
+	}
+}
+
+func (a *alternationRewriter) rewrite(text string) string {
+	if a == nil {
+		return text
+	}
+
+	return a.re.ReplaceAllStringFunc(text, func(match string) string {
+		if to, ok := a.to[strings.ToLower(match)]; ok {
+			return to
+		}
+
+		return match
+	})
 }
 
 // loadMappings treats an unreadable file as empty; the proxy path uses
@@ -172,6 +222,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		patterns     []string
 		replacements []string
 		bounded      []bool
+		orgRules     []termEntry
 	)
 
 	for _, m := range sorted {
@@ -179,7 +230,11 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		case m.Type == "wildcard":
 			if direction == directionR2F {
 				suffix := strings.ToLower(strings.TrimPrefix(m.Real, "*"))
-				rw.wildcards = append(rw.wildcards, wildcardMapping{suffix: suffix, fiction: m.Fiction})
+				rw.wildcards = append(rw.wildcards, wildcardMapping{
+					suffix:  suffix,
+					base:    strings.TrimPrefix(suffix, "."),
+					fiction: m.Fiction,
+				})
 			}
 
 		case m.Type == "ip" && direction == directionR2F:
@@ -189,7 +244,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 			}
 
 		case m.Type == "org":
-			rw.addOrgRule(m, direction)
+			orgRules = append(orgRules, orgRule(m, direction))
 
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
@@ -208,8 +263,10 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		rw.ac = newACMachine(patterns, replacements, bounded)
 	}
 
+	rw.orgs = newAlternationRewriter(orgRules)
+
 	if direction == directionR2F {
-		rw.regex = compiledTermRegexes
+		rw.terms = termRewriter
 	}
 
 	return rw
@@ -224,25 +281,21 @@ func isHostMapping(typ string) bool {
 	return typ == "domain" || typ == "email"
 }
 
-// addOrgRule compiles an org mapping into a word-bounded regex so a short org
-// name ("ge", "hp") does not shred unrelated words ("message" -> "messaDEV...").
-func (rw *rewriter) addOrgRule(m mappingEntry, direction string) {
-	from, to := m.Real, m.Fiction
-	if direction != directionR2F {
-		from, to = m.Fiction, m.Real
+// orgRule orients an org mapping for the given direction. Org names go
+// through the word-bounded alternation so a short one ("ge", "hp") does not
+// shred unrelated words ("message" -> "messaDEV...").
+func orgRule(m mappingEntry, direction string) termEntry {
+	if direction == directionR2F {
+		return termEntry{From: m.Real, To: m.Fiction}
 	}
 
-	if re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(from) + `\b`); err == nil {
-		rw.orgRegex = append(rw.orgRegex, regexEntry{re: re, to: to})
-	}
+	return termEntry{From: m.Fiction, To: m.Real}
 }
 
 func (rw *rewriter) rewrite(text string) string {
 	// Wildcards first, or the exact-match pass rewrites the base domain inside
 	// an unmapped subdomain and leaks the label upstream.
-	for _, wc := range rw.wildcards {
-		text = rw.rewriteWildcard(text, wc)
-	}
+	text = rw.rewriteWildcards(text)
 
 	text = rw.rewriteIPs(text)
 
@@ -252,36 +305,74 @@ func (rw *rewriter) rewrite(text string) string {
 
 	// Org after the automaton, so a mapped domain is consumed before its bare
 	// org name is matched.
-	for _, r := range rw.orgRegex {
-		text = r.re.ReplaceAllString(text, r.to)
-	}
+	text = rw.orgs.rewrite(text)
 
-	for _, r := range rw.regex {
-		text = r.re.ReplaceAllString(text, r.to)
-	}
-
-	return text
+	return rw.terms.rewrite(text)
 }
 
-// rewriteWildcard replaces wc-covered subdomains lacking their own mapping;
-// explicit hosts are skipped so the exact pass gives them a reversible value.
-func (rw *rewriter) rewriteWildcard(text string, wc wildcardMapping) string {
-	base := strings.TrimPrefix(wc.suffix, ".")
+// rewriteWildcards replaces every wildcard-covered hostname that has no
+// mapping of its own; explicit hosts are left for the exact pass, which gives
+// them a reversible value.
+//
+// All wildcards share one scan. Scanning the whole text once per wildcard and
+// then calling strings.ReplaceAll for each match was the most expensive part
+// of a rewrite, and quadratic in the number of times a hostname appeared.
+func (rw *rewriter) rewriteWildcards(text string) string {
+	if len(rw.wildcards) == 0 {
+		return text
+	}
 
-	for _, match := range domainRegex.FindAllString(text, -1) {
+	locs := domainRegex.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+
+	var b strings.Builder
+
+	pos := 0
+
+	for _, loc := range locs {
 		// Compare lowercased so "API.AMAZON.COM" is caught before the exact
 		// pass rewrites its base and leaks the "API" label.
-		lower := strings.ToLower(match)
-		if lower == base || rw.explicit[lower] {
+		fiction, ok := rw.wildcardFiction(strings.ToLower(text[loc[0]:loc[1]]))
+		if !ok {
 			continue
 		}
 
-		if strings.HasSuffix(lower, wc.suffix) {
-			text = strings.ReplaceAll(text, match, wc.fiction)
+		b.WriteString(text[pos:loc[0]])
+		b.WriteString(fiction)
+
+		pos = loc[1]
+	}
+
+	if pos == 0 {
+		return text
+	}
+
+	b.WriteString(text[pos:])
+
+	return b.String()
+}
+
+// wildcardFiction returns the fiction covering host, which must already be
+// lowercased. Wildcards are tried in mapping order, so the longest suffix
+// registered first still wins.
+func (rw *rewriter) wildcardFiction(host string) (string, bool) {
+	if rw.explicit[host] {
+		return "", false
+	}
+
+	for _, wc := range rw.wildcards {
+		if host == wc.base {
+			continue
+		}
+
+		if strings.HasSuffix(host, wc.suffix) {
+			return wc.fiction, true
 		}
 	}
 
-	return text
+	return "", false
 }
 
 // mappingKeys returns the "type|real" key of every mapping in engDir. Callers
