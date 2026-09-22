@@ -122,6 +122,10 @@ func cmdInit(args []string) {
 		fatal("Usage: tanuki init <engagement-name> [--fiction-org NAME]")
 	}
 
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
+	}
+
 	if fictionOrg == "" {
 		fictionOrg = "DEVTARGET"
 	}
@@ -417,6 +421,10 @@ func cmdActivate(args []string) {
 	}
 
 	name := args[0]
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
+	}
+
 	if !fileExists(engagementDir(name)) {
 		fatal(fmt.Sprintf("engagement %q not found", name))
 	}
@@ -565,6 +573,10 @@ func cmdExport(args []string) {
 		name = eng
 	}
 
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
+	}
+
 	engDir := engagementDir(name)
 	if !fileExists(engDir) {
 		fatal(fmt.Sprintf("engagement %q not found", name))
@@ -605,6 +617,11 @@ func readExport(path string) exportedEngagement {
 
 	if imported.Name == "" {
 		fatal("export file missing engagement name")
+	}
+
+	// The name comes from an untrusted file and becomes a path component.
+	if err := validateEngagementName(imported.Name); err != nil {
+		fatal(fmt.Sprintf("export file %s: %v", path, err))
 	}
 
 	return imported

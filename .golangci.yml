@@ -103,8 +103,11 @@ linters:
       - examples$
     rules:
       # G304/G703 (path traversal, incl. taint analysis): engagement file paths
-      # are built from engagementDir, fixed .claude locations, or the
-      # operator-supplied CLI import path.
+      # are built from engagementDir, whose name argument is checked by
+      # validateEngagementName at every untrusted entry point (CLI args,
+      # import files, the active-engagement marker), or from fixed .claude
+      # locations. The import path itself is an operator-supplied CLI
+      # argument.
       - path: internal/tanuki
         linters:
           - gosec
