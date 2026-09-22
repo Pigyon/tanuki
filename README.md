@@ -36,6 +36,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 - [What gets rewritten](#what-gets-rewritten)
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
+- [Verifying an engagement](#verifying-an-engagement)
 - [Known limitations](#known-limitations)
 - [Fail-closed behaviour](#fail-closed-behaviour)
 - [Disclaimer](#disclaimer)
@@ -204,6 +205,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `list`                              | List all engagements                               |
 | `activate <name>`                   | Switch the active engagement                       |
 | `test <text>`                       | Test rewriting on sample text                      |
+| `verify [file...\|-]`               | Check the mappings hold; scan files for unmapped targets |
 | `terms`                             | Show terminology mappings                          |
 | `export [name]`                     | Export an engagement as JSON                       |
 | `import <file.json>`                | Import an engagement from JSON                     |
@@ -266,6 +268,34 @@ Set in `compose.yaml`:
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
 - **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~75 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. Domains with unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
 - **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
+
+## Verifying an engagement
+
+`tanuki verify` answers two questions without sending anything anywhere.
+
+**Do my mappings actually hold?** With no arguments it takes every real value in the table and puts it through the shapes a target takes in practice — bare, in a URL, inside backticks, as a markdown link, in a JSON field, in an HTTP header, upper-cased, at the end of a sentence — then checks the value is gone from each. A mapping that covers the bare string can still fail inside one of these, so it is worth running before an engagement starts rather than during it.
+
+```console
+$ ./tanuki verify
+Verifying 8 mappings against 12 shapes
+
+96 checks, 0 leaks
+Every mapped value was rewritten in every shape.
+```
+
+**Is this document safe to send?** Given files, `-`, or a `< file` redirect, it rewrites the text and reports the real-looking values that no mapping covers. This is the check to run over a draft report before it is submitted.
+
+```console
+$ ./tanuki verify report.md
+  LEAK  report.md
+        partner-portal.acme-supplier.io
+        93.184.216.34
+
+2 value(s) have no mapping and would be sent as-is.
+Add them with: tanuki add <domain> / tanuki add-ip <ip>
+```
+
+It exits non-zero when it finds something, so it drops into a pre-submission hook or CI as-is.
 
 ## Fail-closed behaviour
 

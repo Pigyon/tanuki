@@ -30,6 +30,7 @@ var commands = map[string]func(args []string){
 	"list":      func([]string) { cmdList() },
 	"activate":  cmdActivate,
 	"test":      cmdTest,
+	"verify":    cmdVerify,
 	"terms":     func([]string) { cmdTerms() },
 	"hook":      cmdHook,
 	"setup":     func([]string) { cmdSetup() },
@@ -80,6 +81,8 @@ Commands:
   list                              List engagements
   activate <name>                   Switch engagement
   test <text>                       Test rewriting on sample text
+  verify [file...|-]                Check the mappings hold; given files, "-",
+                                    or "< file", list unmapped targets in them
   terms                             Show terminology mappings
   export [name]                     Export engagement as JSON
   import <file.json>                Import engagement from JSON
