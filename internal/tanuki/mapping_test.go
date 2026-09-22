@@ -12,6 +12,13 @@ import (
 const (
 	testBaseDomain = "amazon.com"
 	testSubDomain  = "bounty.amazon.com"
+	testOrgName    = "amazon"
+	testPublicIP   = "52.94.236.248"
+
+	// Fiction values the fixtures allocate, in allocation order: the base
+	// domain takes the first port and its wildcard the second.
+	testFictionBase     = "localhost:9000"
+	testFictionWildcard = "localhost:9001"
 )
 
 // newTestEngagement creates an isolated engagement directory seeded with
@@ -67,8 +74,8 @@ func TestNoRealValueSurvivesRewrite(t *testing.T) {
 	r2f, _ := rewriters(t, engDir)
 
 	leaky := []string{
-		"amazon.com",
-		"bounty.amazon.com",
+		testBaseDomain,
+		testSubDomain,
 		"admin@amazon.com",
 		"@amazon.com",
 		"s3://amazon",
@@ -106,8 +113,8 @@ func TestRoundTripRestoresRealValues(t *testing.T) {
 		name  string
 		input string
 	}{
-		{name: "bare domain", input: "amazon.com"},
-		{name: "subdomain", input: "bounty.amazon.com"},
+		{name: "bare domain", input: testBaseDomain},
+		{name: "subdomain", input: testSubDomain},
 		{name: "url", input: "https://bounty.amazon.com/api"},
 		{name: "email", input: "admin@amazon.com"},
 		{name: "mixed", input: "scan bounty.amazon.com then mail admin@amazon.com"},
@@ -215,7 +222,7 @@ func TestWildcardRewriting(t *testing.T) {
 	}
 
 	// The base domain itself must NOT match the wildcard — it has its own mapping.
-	base := r2f.rewrite("amazon.com")
+	base := r2f.rewrite(testBaseDomain)
 	if base == wildcardFiction {
 		t.Errorf("base domain matched wildcard instead of its own mapping")
 	}
@@ -240,7 +247,7 @@ func TestUnmappedSubdomainLabelDoesNotLeak(t *testing.T) {
 			t.Errorf("subdomain label %q leaked: %s", label, got)
 		}
 
-		if strings.Contains(got, "amazon") {
+		if strings.Contains(got, testOrgName) {
 			t.Errorf("base domain leaked for %q: %s", label, got)
 		}
 	}
@@ -286,12 +293,12 @@ func TestCaseInsensitiveMatching(t *testing.T) {
 		input string
 		leaks []string // must not survive, compared case-insensitively
 	}{
-		{name: "uppercase domain", input: "visit AMAZON.COM now", leaks: []string{"amazon"}},
-		{name: "mixed domain", input: "visit Amazon.Com now", leaks: []string{"amazon"}},
-		{name: "explicit subdomain uppercase", input: "BOUNTY.AMAZON.COM", leaks: []string{"amazon", "bounty"}},
-		{name: "wildcard subdomain uppercase", input: "hit API.AMAZON.COM here", leaks: []string{"amazon", "api."}},
-		{name: "org arbitrary case", input: "the aMaZoN team", leaks: []string{"amazon"}},
-		{name: "email uppercase", input: "mail ADMIN@AMAZON.COM", leaks: []string{"amazon"}},
+		{name: "uppercase domain", input: "visit AMAZON.COM now", leaks: []string{testOrgName}},
+		{name: "mixed domain", input: "visit Amazon.Com now", leaks: []string{testOrgName}},
+		{name: "explicit subdomain uppercase", input: "BOUNTY.AMAZON.COM", leaks: []string{testOrgName, "bounty"}},
+		{name: "wildcard subdomain uppercase", input: "hit API.AMAZON.COM here", leaks: []string{testOrgName, "api."}},
+		{name: "org arbitrary case", input: "the aMaZoN team", leaks: []string{testOrgName}},
+		{name: "email uppercase", input: "mail ADMIN@AMAZON.COM", leaks: []string{testOrgName}},
 	}
 
 	for _, tc := range cases {
@@ -333,7 +340,7 @@ func TestPublicIPsAreMappedAndRoundTrip(t *testing.T) {
 
 	engDir := newTestEngagement(t, "example.com")
 
-	publicIPs := []string{"52.94.236.248", "8.8.8.8", "2001:4860:4860::8888"}
+	publicIPs := []string{testPublicIP, "8.8.8.8", "2001:4860:4860::8888"}
 
 	for _, ip := range publicIPs {
 		if err := addIPMapping(engDir, ip); err != nil {
@@ -403,9 +410,9 @@ func TestFindNewDomainsDetectsApexDomains(t *testing.T) {
 		input    string
 		expected []string
 	}{
-		{input: "check amazon.com for issues", expected: []string{"amazon.com"}},
-		{input: "check bounty.amazon.com", expected: []string{"amazon.com", "bounty.amazon.com"}},
-		{input: "amazon.com and amazon.com again", expected: []string{"amazon.com"}},
+		{input: "check amazon.com for issues", expected: []string{testBaseDomain}},
+		{input: "check bounty.amazon.com", expected: []string{testBaseDomain, testSubDomain}},
+		{input: "amazon.com and amazon.com again", expected: []string{testBaseDomain}},
 		{input: "both acme.io and acme.io/path", expected: []string{"acme.io"}},
 	}
 
@@ -508,9 +515,9 @@ func TestExtractOrgAndBaseDomain(t *testing.T) {
 		expectedBase string
 		expectedOrg  string
 	}{
-		{input: "amazon.com", expectedBase: "amazon.com", expectedOrg: "amazon"},
-		{input: "bounty.amazon.com", expectedBase: "amazon.com", expectedOrg: "amazon"},
-		{input: "a.b.c.amazon.com", expectedBase: "amazon.com", expectedOrg: "amazon"},
+		{input: testBaseDomain, expectedBase: testBaseDomain, expectedOrg: testOrgName},
+		{input: testSubDomain, expectedBase: testBaseDomain, expectedOrg: testOrgName},
+		{input: "a.b.c.amazon.com", expectedBase: testBaseDomain, expectedOrg: testOrgName},
 		{input: "example.co.uk", expectedBase: "example.co.uk", expectedOrg: "example"},
 		{input: "api.example.co.uk", expectedBase: "example.co.uk", expectedOrg: "example"},
 	}
@@ -533,7 +540,7 @@ func TestAddDomainIsIdempotent(t *testing.T) {
 
 	before := len(loadMappings(engDir))
 
-	if err := addDomain(engDir, "amazon.com", "DEVTARGET"); err != nil {
+	if err := addDomain(engDir, testBaseDomain, "DEVTARGET"); err != nil {
 		t.Fatalf("addDomain: %v", err)
 	}
 
@@ -628,13 +635,13 @@ func TestImportedCountersAvoidCollision(t *testing.T) {
 func TestMultiOrgFictionsDoNotCollide(t *testing.T) {
 	t.Parallel()
 
-	engDir := newTestEngagement(t, "amazon.com", "google.com")
+	engDir := newTestEngagement(t, testBaseDomain, "google.com")
 	r2f, f2r := rewriters(t, engDir)
 
 	text := "mail admin@amazon.com and dev@google.com"
 	fiction := r2f.rewrite(text)
 
-	if strings.Contains(fiction, "amazon") || strings.Contains(fiction, "google") {
+	if strings.Contains(fiction, testOrgName) || strings.Contains(fiction, "google") {
 		t.Errorf("a real org leaked: %s", fiction)
 	}
 
@@ -667,7 +674,7 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 
 	engDir := newTestEngagement(t, "example.com")
 
-	for _, ip := range []string{"52.94.236.248", "2001:db8:85a3::8a2e:370:7334"} {
+	for _, ip := range []string{testPublicIP, "2001:db8:85a3::8a2e:370:7334"} {
 		if err := addIPMapping(engDir, ip); err != nil {
 			t.Fatalf("addIPMapping(%q): %v", ip, err)
 		}
@@ -691,8 +698,8 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 	}
 
 	// A canonical mapped IP still round-trips.
-	fiction := r2f.rewrite("52.94.236.248")
-	if back := f2r.rewrite(fiction); back != "52.94.236.248" {
+	fiction := r2f.rewrite(testPublicIP)
+	if back := f2r.rewrite(fiction); back != testPublicIP {
 		t.Errorf("IP round-trip mismatch: got %q", back)
 	}
 }

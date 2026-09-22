@@ -95,7 +95,7 @@ func post(t *testing.T, url, path, body string) (status int, respBody string) {
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyRewritesRequestToFiction(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	received := make(chan string, 1)
 	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -115,11 +115,11 @@ func TestProxyRewritesRequestToFiction(t *testing.T) {
 	}
 
 	got := <-received
-	if strings.Contains(got, "amazon.com") {
+	if strings.Contains(got, testBaseDomain) {
 		t.Errorf("real domain leaked to upstream: %s", got)
 	}
 
-	if !strings.Contains(got, "localhost:9000") {
+	if !strings.Contains(got, testFictionBase) {
 		t.Errorf("expected fiction in upstream body, got: %s", got)
 	}
 }
@@ -137,7 +137,7 @@ func TestProxyFailsClosedWithoutEngagement(t *testing.T) {
 
 	proxy := newProxy(t, up.URL)
 
-	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"amazon.com"}`)
+	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":testBaseDomain}`)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", status)
 	}
@@ -160,7 +160,7 @@ func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 
 	proxy := newProxy(t, up.URL)
 
-	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"amazon.com"}`)
+	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":testBaseDomain}`)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", status)
 	}
@@ -174,7 +174,7 @@ func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyPassesThroughNonMessagesPath(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	received := make(chan string, 1)
 	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +197,7 @@ func TestProxyPassesThroughNonMessagesPath(t *testing.T) {
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyReversesJSONResponse(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -207,18 +207,18 @@ func TestProxyReversesJSONResponse(t *testing.T) {
 	proxy := newProxy(t, up.URL)
 
 	_, body := post(t, proxy.URL, "/v1/messages", `{"m":1}`)
-	if !strings.Contains(body, "amazon.com") {
+	if !strings.Contains(body, testBaseDomain) {
 		t.Errorf("fiction not reversed to real in response: %s", body)
 	}
 
-	if strings.Contains(body, "localhost:9000") {
+	if strings.Contains(body, testFictionBase) {
 		t.Errorf("fiction leaked to client: %s", body)
 	}
 }
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyReversesSSEResponse(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -235,11 +235,11 @@ func TestProxyReversesSSEResponse(t *testing.T) {
 	proxy := newProxy(t, up.URL)
 
 	_, body := post(t, proxy.URL, "/v1/messages", `{"m":1}`)
-	if !strings.Contains(body, "amazon.com") {
+	if !strings.Contains(body, testBaseDomain) {
 		t.Errorf("SSE fiction not reversed to real: %s", body)
 	}
 
-	if strings.Contains(body, "localhost:9000") {
+	if strings.Contains(body, testFictionBase) {
 		t.Errorf("fiction leaked to client in SSE: %s", body)
 	}
 }

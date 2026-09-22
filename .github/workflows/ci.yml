@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - name: Verify go.mod is tidy
@@ -47,12 +47,12 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.6.1
+          version: v2.13.2
           # config verify fetches a JSON schema over the network and flakes on
           # timeouts; `run` still parses+validates the config and lints the code.
           verify: false
@@ -65,7 +65,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
 
       - name: govulncheck
