@@ -283,16 +283,43 @@ func nextCounter(engDir, filename, defaultVal string) (int, error) {
 	unlock := acquireFileLock(path)
 	defer unlock()
 
-	n, err := strconv.Atoi(readFileContent(path))
+	n, err := readCounter(path, defaultVal)
 	if err != nil {
-		n, err = strconv.Atoi(defaultVal)
-		if err != nil {
-			return 0, fmt.Errorf("counter %s: invalid default %q: %w", filename, defaultVal, err)
-		}
+		return 0, err
 	}
 
 	if err := writeFileContent(path, strconv.Itoa(n+1)); err != nil {
 		return 0, err
+	}
+
+	return n, nil
+}
+
+// readCounter returns the next value to allocate from path. Only an absent or
+// empty file falls back to defaultVal: a file that exists but cannot be read
+// or parsed is an error, because restarting from the default would hand two
+// real targets the same fiction value and make the reverse pass ambiguous.
+func readCounter(path, defaultVal string) (int, error) {
+	name := filepath.Base(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("counter %s is unreadable: %w", name, err)
+	}
+
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		n, err := strconv.Atoi(defaultVal)
+		if err != nil {
+			return 0, fmt.Errorf("counter %s: invalid default %q: %w", name, defaultVal, err)
+		}
+
+		return n, nil
+	}
+
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("counter %s is corrupt (%q): refusing to reallocate fiction values", name, raw)
 	}
 
 	return n, nil
