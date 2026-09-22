@@ -36,6 +36,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 - [What gets rewritten](#what-gets-rewritten)
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
+- [Verifying an engagement](#verifying-an-engagement)
 - [Known limitations](#known-limitations)
 - [Fail-closed behaviour](#fail-closed-behaviour)
 - [Disclaimer](#disclaimer)
@@ -204,6 +205,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `list`                              | List all engagements                               |
 | `activate <name>`                   | Switch the active engagement                       |
 | `test <text>`                       | Test rewriting on sample text                      |
+| `verify [file...\|-]`               | Check the mappings hold; scan files for unmapped targets |
 | `terms`                             | Show terminology mappings                          |
 | `export [name]`                     | Export an engagement as JSON                       |
 | `import <file.json>`                | Import an engagement from JSON                     |
@@ -247,6 +249,7 @@ Set in `compose.yaml`:
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
 | `TANUKI_RULES`       | _(none)_                    | Custom rules: `real\|fiction` pairs, semicolon-separated |
 | `TANUKI_DEBUG`       | _(none)_                    | Set to any non-empty value to enable debug logging       |
+| `TANUKI_ON_LEAK`     | `refuse`                    | `refuse` or `warn` when a real value survives the rewrite |
 
 ## Architecture
 
@@ -262,12 +265,51 @@ Set in `compose.yaml`:
 - **Literal string matching only.** Encoded forms (URL-encoded, base64, and similar) won't be caught by the Aho-Corasick automaton.
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
+- **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
 - **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~75 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. Domains with unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
 - **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
 
+## Verifying an engagement
+
+`tanuki verify` answers two questions without sending anything anywhere.
+
+**Do my mappings actually hold?** With no arguments it takes every real value in the table and puts it through the shapes a target takes in practice — bare, in a URL, inside backticks, as a markdown link, in a JSON field, in an HTTP header, upper-cased, at the end of a sentence — then checks the value is gone from each. A mapping that covers the bare string can still fail inside one of these, so it is worth running before an engagement starts rather than during it.
+
+```console
+$ ./tanuki verify
+Verifying 8 mappings against 12 shapes
+
+96 checks, 0 leaks
+Every mapped value was rewritten in every shape.
+```
+
+**Is this document safe to send?** Given files, `-`, or a `< file` redirect, it rewrites the text and reports the real-looking values that no mapping covers. This is the check to run over a draft report before it is submitted.
+
+```console
+$ ./tanuki verify report.md
+  LEAK  report.md
+        partner-portal.acme-supplier.io
+        93.184.216.34
+
+2 value(s) have no mapping and would be sent as-is.
+Add them with: tanuki add <domain> / tanuki add-ip <ip>
+```
+
+It exits non-zero when it finds something, so it drops into a pre-submission hook or CI as-is.
+
 ## Fail-closed behaviour
 
-The proxy will not forward a prompt it cannot anonymize. If a `/v1/messages` request arrives with no active engagement, or the mapping table is unreadable or empty, the proxy refuses it with `503` rather than leaking plaintext upstream. A brand-new engagement therefore blocks until it has at least one mapping — the `UserPromptSubmit` hook adds one automatically the moment your prompt mentions a target, so a normal session (where your first prompt names the target) is unaffected.
+The proxy will not forward a prompt it cannot anonymize.
+
+**Every body is checked after it is rewritten.** The last thing that happens before a `/v1/messages` request leaves is a re-scan for anything that still looks like a real target. If one survived, the request is refused with `503` and the value is written to the tanuki log — never into the HTTP response, which the client may fold into its next prompt. In a working pipeline this never fires; when it does, it means the rewriter missed something and the body must not go upstream.
+
+**Targets are mapped wherever they first appear.** The hooks only observe the prompt you type and the output of tools you run. A target reaching the conversation any other way — an `@`-mentioned file, a paste, `CLAUDE.md`, a session resumed elsewhere, or any client that is not Claude Code — is never seen by them. The proxy therefore runs the same detection over every outbound body itself, so a value that has no fiction gets one before the rewrite rather than travelling upstream in the clear.
+
+A request is also refused when there is no active engagement, or the mapping table is unreadable, or the table is empty and the body holds nothing recognisable. A brand-new engagement no longer blocks: the first request naming a target maps it and forwards the anonymized body.
+
+Set `TANUKI_ON_LEAK=warn` to log a surviving value and forward anyway. That trades the guarantee for uptime, and is meant for diagnosing a false positive, not for normal use.
+
+> The check inherits detection's blind spots: it recognises the same curated TLD list and the same literal forms, so a target on an unusual TLD or in an encoded form is invisible to both. It catches rewriter failures, not detector failures.
 
 ## Disclaimer
 

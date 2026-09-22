@@ -137,7 +137,7 @@ func TestProxyFailsClosedWithoutEngagement(t *testing.T) {
 
 	proxy := newProxy(t, up.URL)
 
-	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":testBaseDomain}`)
+	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"`+testBaseDomain+`"}`)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", status)
 	}
@@ -160,7 +160,10 @@ func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 
 	proxy := newProxy(t, up.URL)
 
-	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":testBaseDomain}`)
+	// Nothing detectable in the body, so the empty mapping table is the only
+	// reason to refuse; a body naming a target is covered by
+	// TestProxyMapsOnFirstSightInsteadOfRefusing.
+	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"nothing to rewrite here"}`)
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", status)
 	}

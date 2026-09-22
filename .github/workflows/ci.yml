@@ -122,3 +122,18 @@ jobs:
           fiction=$(sed -n '/Real -> Fiction/,/^$/p' /tmp/out.txt)
           echo "$fiction" | grep -q "localhost:" || { echo "::error::domain was not rewritten"; exit 1; }
           ! echo "$fiction" | grep -q "example\.com" || { echo "::error::real domain leaked through rewrite"; exit 1; }
+
+      - name: Mappings verify clean
+        run: |
+          run() { docker run --rm -v tanuki-ci:/data tanuki:ci "$@"; }
+          run verify || { echo "::error::tanuki verify reported a leak"; exit 1; }
+
+      - name: Verify flags an unmapped target
+        run: |
+          printf 'contact security@unmapped-target.io at 93.184.216.34\n' > /tmp/report.md
+          status=0
+          docker run --rm -v tanuki-ci:/data -v /tmp/report.md:/r.md:ro tanuki:ci verify /r.md || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "::error::verify passed a report holding unmapped targets"
+            exit 1
+          fi
