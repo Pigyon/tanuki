@@ -85,7 +85,7 @@ func TestACReplaceAll(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := newACMachine(tt.patterns, tt.replacements)
+			m := newACMachine(tt.patterns, tt.replacements, nil)
 			if got := m.replaceAll(tt.input); got != tt.expected {
 				t.Errorf("replaceAll(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
@@ -100,7 +100,7 @@ func TestACReplaceAll(t *testing.T) {
 func TestACOverlapSelection(t *testing.T) {
 	t.Parallel()
 
-	m := newACMachine([]string{"aaa", "aa"}, []string{"X", "Y"})
+	m := newACMachine([]string{"aaa", "aa"}, []string{"X", "Y"}, nil)
 
 	if got, want := m.replaceAll("aaaa"), "Xa"; got != want {
 		t.Errorf("replaceAll(%q) = %q, want %q", "aaaa", got, want)
@@ -114,7 +114,7 @@ func TestACOverlapSelection(t *testing.T) {
 func TestACEmptyMachine(t *testing.T) {
 	t.Parallel()
 
-	m := newACMachine(nil, nil)
+	m := newACMachine(nil, nil, nil)
 	if got := m.replaceAll("untouched"); got != "untouched" {
 		t.Errorf("empty machine modified text: %q", got)
 	}
@@ -125,7 +125,7 @@ func TestACBinarySafety(t *testing.T) {
 
 	// The machine is byte-based; multi-byte UTF-8 must pass through intact
 	// when it is not part of a pattern.
-	m := newACMachine([]string{"target"}, []string{"project"})
+	m := newACMachine([]string{"target"}, []string{"project"}, nil)
 
 	text := "スキャン target のホスト"
 
@@ -149,7 +149,7 @@ func BenchmarkACReplaceAll(b *testing.B) {
 		"127.0.0.2", "file:///tmp/devtarget-prod", "/dev/project/",
 	}
 
-	m := newACMachine(patterns, replacements)
+	m := newACMachine(patterns, replacements, nil)
 	text := strings.Repeat("scan bounty.amazon.com from 52.94.236.248 and mail admin@amazon.com. ", 100)
 
 	b.ReportAllocs()
@@ -157,5 +157,67 @@ func BenchmarkACReplaceAll(b *testing.B) {
 
 	for range b.N {
 		_ = m.replaceAll(text)
+	}
+}
+
+func TestDomainContinues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		i    int
+		want bool
+	}{
+		{"end of text", "acme.com", 8, false},
+		{"longer label", "acme.community", 8, true},
+		{"longer name", "acme.com.br", 8, true},
+		{"trailing dot", "acme.com.", 8, false},
+		{"sentence end", "visit acme.com. next", 14, false},
+		{"path", "acme.com/x", 8, false},
+		{"port", "acme.com:443", 8, false},
+		{"comma", "acme.com, x", 8, false},
+		{"hyphen then label", "acme.com-b", 8, true},
+		{"hyphen then space", "acme.com- ", 8, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := domainContinues(tt.text, tt.i); got != tt.want {
+				t.Errorf("domainContinues(%q, %d) = %v, want %v", tt.text, tt.i, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBoundedPatternsSkipLongerHostnames is the corruption this guards
+// against: "amazon.com" firing inside "amazon.community" replaced half of an
+// unrelated name and produced "localhost:9000munity".
+func TestBoundedPatternsSkipLongerHostnames(t *testing.T) {
+	t.Parallel()
+
+	m := newACMachine(
+		[]string{testBaseDomain, "s3://amazon"},
+		[]string{testFictionBase, "file:///tmp/devtarget"},
+		[]bool{true, false},
+	)
+
+	tests := []struct{ in, want string }{
+		{"amazon.community", "amazon.community"},
+		{"amazon.com.br", "amazon.com.br"},
+		{"amazon.com", testFictionBase},
+		{"amazon.com.", testFictionBase + "."},
+		{"amazon.com/x", testFictionBase + "/x"},
+		// Unbounded patterns stay greedy on purpose: a bucket prefix must
+		// keep covering every bucket that starts with it.
+		{"s3://amazon-logs", "file:///tmp/devtarget-logs"},
+	}
+
+	for _, tt := range tests {
+		if got := m.replaceAll(tt.in); got != tt.want {
+			t.Errorf("replaceAll(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

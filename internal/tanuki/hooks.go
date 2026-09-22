@@ -17,16 +17,22 @@ const (
 
 var isHookDryRun bool
 
+// emitNoop tells Claude Code the hook has nothing to say. Every path that
+// declines to act writes it, so the tool is never blocked.
+func emitNoop() {
+	fmt.Print("{}")
+}
+
 // emitHookOutput writes the hookSpecificOutput envelope. Event-specific keys
 // must nest here beside hookEventName; at the top level they are ignored.
-func emitHookOutput(eventName string, fields map[string]interface{}) {
-	payload := map[string]interface{}{"hookEventName": eventName}
+func emitHookOutput(eventName string, fields map[string]any) {
+	payload := map[string]any{"hookEventName": eventName}
 
 	for k, v := range fields {
 		payload[k] = v
 	}
 
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"hookSpecificOutput": payload,
 	})
 }
@@ -40,7 +46,7 @@ func cmdHook(args []string) {
 				logger.Error("hook panic recovered", "panic", r)
 			}
 
-			fmt.Print("{}")
+			emitNoop()
 		}
 	}()
 
@@ -74,11 +80,11 @@ func cmdHook(args []string) {
 	}
 }
 
-func readHookInput() (string, map[string]interface{}, bool) {
+func readHookInput() (string, map[string]any, bool) {
 	eng, err := ensureEngagement()
 	if err != nil {
 		logger.Error("hook: failed to ensure engagement", "error", err)
-		fmt.Print("{}")
+		emitNoop()
 
 		return "", nil, false
 	}
@@ -86,16 +92,16 @@ func readHookInput() (string, map[string]interface{}, bool) {
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		logger.Error("hook: failed to read stdin", "error", err)
-		fmt.Print("{}")
+		emitNoop()
 
 		return eng, nil, false
 	}
 
-	var data map[string]interface{}
+	var data map[string]any
 
 	if err := json.Unmarshal(input, &data); err != nil {
 		logger.Error("hook: failed to parse input", "error", err)
-		fmt.Print("{}")
+		emitNoop()
 
 		return eng, nil, false
 	}
@@ -125,15 +131,15 @@ func hookPreToolUse() {
 
 	mappings := loadMappings(engDir)
 	if len(mappings) == 0 {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
 	toolName, _ := data["tool_name"].(string)
 
-	toolInput, _ := data["tool_input"].(map[string]interface{})
+	toolInput, _ := data["tool_input"].(map[string]any)
 	if toolInput == nil {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
@@ -157,7 +163,7 @@ func hookPreToolUse() {
 	}
 
 	if !changed {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
@@ -167,7 +173,43 @@ func hookPreToolUse() {
 
 	// permissionDecision is omitted so rewriting the args does not also approve
 	// the call and remove the operator's permission prompt.
-	emitHookOutput(eventPreToolUse, map[string]interface{}{"updatedInput": toolInput})
+	emitHookOutput(eventPreToolUse, map[string]any{"updatedInput": toolInput})
+}
+
+// autoMapTargets gives every unmapped domain and public IP in text a fiction,
+// so the value is covered from here on, and reports how many of each it
+// found. Both candidate lists are collected before anything is written, so
+// neither pass sees the other's mappings.
+//
+// A failure is logged rather than returned: a hook must not block the tool,
+// and the proxy refuses to forward anything it cannot anonymize anyway.
+func autoMapTargets(engDir, text string) (domains, ips int) {
+	newDomains := findNewDomains(text, engDir)
+	newIPs := findNewPublicIPs(text, engDir)
+
+	for _, domain := range newDomains {
+		if isHookDryRun {
+			logger.Info("dry-run: would auto-map domain", "domain", domain)
+			continue
+		}
+
+		if err := addDomain(engDir, domain, ""); err != nil {
+			logger.Error("failed to add domain", "domain", domain, "error", err)
+		}
+	}
+
+	for _, ip := range newIPs {
+		if isHookDryRun {
+			logger.Info("dry-run: would auto-map IP", "ip", ip)
+			continue
+		}
+
+		if err := addIPMapping(engDir, ip); err != nil {
+			logger.Error("failed to add IP mapping", "ip", ip, "error", err)
+		}
+	}
+
+	return len(newDomains), len(newIPs)
 }
 
 func hookPostToolUse() {
@@ -178,46 +220,23 @@ func hookPostToolUse() {
 
 	toolOutput, _ := data["tool_output"].(string)
 	if toolOutput == "" {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
 	engDir := engagementDir(eng)
 
-	newIPs := findNewPublicIPs(toolOutput, engDir)
-	newDomains := findNewDomains(toolOutput, engDir)
-
-	if isHookDryRun {
-		for _, ip := range newIPs {
-			logger.Info("dry-run: would auto-map IP", "ip", ip)
-		}
-
-		for _, d := range newDomains {
-			logger.Info("dry-run: would auto-map domain", "domain", d)
-		}
-	} else {
-		for _, ip := range newIPs {
-			if err := addIPMapping(engDir, ip); err != nil {
-				logger.Error("failed to add IP mapping", "ip", ip, "error", err)
-			}
-		}
-
-		for _, domain := range newDomains {
-			if err := addDomain(engDir, domain, ""); err != nil {
-				logger.Error("failed to add domain", "domain", domain, "error", err)
-			}
-		}
-	}
+	autoMapTargets(engDir, toolOutput)
 
 	mappings := loadMappings(engDir)
 	if len(mappings) == 0 {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
 	rewritten := newRewriter(mappings, directionR2F).rewrite(toolOutput)
 	if rewritten == toolOutput {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
@@ -225,7 +244,7 @@ func hookPostToolUse() {
 		logger.Info("dry-run: would rewrite tool output", "delta_chars", len(rewritten)-len(toolOutput))
 	}
 
-	emitHookOutput(eventPostToolUse, map[string]interface{}{"updatedToolOutput": rewritten})
+	emitHookOutput(eventPostToolUse, map[string]any{"updatedToolOutput": rewritten})
 }
 
 func hookUserPromptSubmit() {
@@ -241,46 +260,20 @@ func hookUserPromptSubmit() {
 	}
 
 	if promptText == "" {
-		fmt.Print("{}")
+		emitNoop()
 		return
 	}
 
-	engDir := engagementDir(eng)
-
-	newDomains := findNewDomains(promptText, engDir)
-	newIPs := findNewPublicIPs(promptText, engDir)
-
-	if isHookDryRun {
-		for _, d := range newDomains {
-			logger.Info("dry-run: would auto-map domain", "domain", d)
-		}
-
-		for _, ip := range newIPs {
-			logger.Info("dry-run: would auto-map IP", "ip", ip)
-		}
-	} else {
-		for _, domain := range newDomains {
-			if err := addDomain(engDir, domain, ""); err != nil {
-				logger.Error("failed to add domain", "domain", domain, "error", err)
-			}
-		}
-
-		for _, ip := range newIPs {
-			if err := addIPMapping(engDir, ip); err != nil {
-				logger.Error("failed to add IP mapping", "ip", ip, "error", err)
-			}
-		}
-	}
-
-	if len(newDomains) == 0 && len(newIPs) == 0 {
-		fmt.Print("{}")
+	domains, ips := autoMapTargets(engagementDir(eng), promptText)
+	if domains == 0 && ips == 0 {
+		emitNoop()
 		return
 	}
 
-	emitHookOutput(eventUserPromptSubmit, map[string]interface{}{
+	emitHookOutput(eventUserPromptSubmit, map[string]any{
 		"additionalContext": fmt.Sprintf(
 			"[tanuki] Auto-mapped %d new domain(s) and %d new IP(s)",
-			len(newDomains), len(newIPs),
+			domains, ips,
 		),
 	})
 }

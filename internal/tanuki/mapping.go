@@ -26,6 +26,10 @@ const (
 // past it means a real value would have no fiction counterpart.
 const maxPort = 65535
 
+// maxFictionIPIndex is the highest ip_counter value that still renders inside
+// 127.0.0.0/16: the last address the scheme can produce is 127.0.255.254.
+const maxFictionIPIndex = 256*254 - 1
+
 type mappingEntry struct {
 	Type, Real, Fiction string
 }
@@ -37,13 +41,14 @@ type termEntry struct {
 
 type wildcardMapping struct {
 	suffix  string
+	base    string // suffix without the leading dot: the apex itself
 	fiction string
 }
 
 type rewriter struct {
 	ac        *acMachine
-	regex     []regexEntry
-	orgRegex  []regexEntry
+	terms     *alternationRewriter
+	orgs      *alternationRewriter
 	wildcards []wildcardMapping
 	// ipFictions maps a canonical real IP to its fiction, so every textual
 	// form of that address (zero-padded, IPv6-compressed) is rewritten.
@@ -53,11 +58,6 @@ type rewriter struct {
 	explicit map[string]bool
 }
 
-type regexEntry struct {
-	re *regexp.Regexp
-	to string
-}
-
 //go:embed terminology.json
 var terminologyJSON []byte
 
@@ -65,9 +65,9 @@ var terminologyJSON []byte
 var tldsJSON []byte
 
 var (
-	terminology         []termEntry
-	compiledTermRegexes []regexEntry
-	commonTLDs          map[string]bool
+	terminology  []termEntry
+	termRewriter *alternationRewriter
+	commonTLDs   map[string]bool
 )
 
 func init() {
@@ -85,18 +85,72 @@ func init() {
 		commonTLDs[tld] = true
 	}
 
-	sorted := make([]termEntry, len(terminology))
-	copy(sorted, terminology)
-	sort.Slice(sorted, func(i, j int) bool {
+	termRewriter = newAlternationRewriter(terminology)
+}
+
+// alternationRewriter applies a set of word-bounded literal rules in a single
+// pass. Running each rule as its own ReplaceAll dominated the cost of a
+// rewrite: the 29 terminology rules alone meant 29 full scans of every
+// request body and of every SSE event.
+type alternationRewriter struct {
+	re *regexp.Regexp
+	to map[string]string // lowercased match -> replacement
+}
+
+// newAlternationRewriter returns nil when there is nothing to rewrite, which
+// the rewrite method treats as a no-op.
+func newAlternationRewriter(rules []termEntry) *alternationRewriter {
+	sorted := make([]termEntry, len(rules))
+	copy(sorted, rules)
+
+	// Longest first: the alternation is leftmost-first, so a longer phrase
+	// has to be offered before any rule that is a prefix of it.
+	sort.SliceStable(sorted, func(i, j int) bool {
 		return len(sorted[i].From) > len(sorted[j].From)
 	})
 
-	for _, t := range sorted {
-		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(t.From) + `\b`)
-		if err == nil {
-			compiledTermRegexes = append(compiledTermRegexes, regexEntry{re: re, to: t.To})
+	to := make(map[string]string, len(sorted))
+	alts := make([]string, 0, len(sorted))
+
+	for _, r := range sorted {
+		key := strings.ToLower(r.From)
+		if key == "" {
+			continue
 		}
+
+		// First rule wins, matching what sequential passes did.
+		if _, dup := to[key]; dup {
+			continue
+		}
+
+		to[key] = r.To
+		alts = append(alts, regexp.QuoteMeta(r.From))
 	}
+
+	if len(alts) == 0 {
+		return nil
+	}
+
+	// QuoteMeta escapes every rule, so the pattern is always valid: compiling
+	// it must not fail quietly, or the rules would silently stop applying.
+	return &alternationRewriter{
+		re: regexp.MustCompile(`(?i)\b(?:` + strings.Join(alts, "|") + `)\b`),
+		to: to,
+	}
+}
+
+func (a *alternationRewriter) rewrite(text string) string {
+	if a == nil {
+		return text
+	}
+
+	return a.re.ReplaceAllStringFunc(text, func(match string) string {
+		if to, ok := a.to[strings.ToLower(match)]; ok {
+			return to
+		}
+
+		return match
+	})
 }
 
 // loadMappings treats an unreadable file as empty; the proxy path uses
@@ -164,14 +218,23 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		return len(sorted[i].Fiction) > len(sorted[j].Fiction)
 	})
 
-	var patterns, replacements []string
+	var (
+		patterns     []string
+		replacements []string
+		bounded      []bool
+		orgRules     []termEntry
+	)
 
 	for _, m := range sorted {
 		switch {
 		case m.Type == "wildcard":
 			if direction == directionR2F {
 				suffix := strings.ToLower(strings.TrimPrefix(m.Real, "*"))
-				rw.wildcards = append(rw.wildcards, wildcardMapping{suffix: suffix, fiction: m.Fiction})
+				rw.wildcards = append(rw.wildcards, wildcardMapping{
+					suffix:  suffix,
+					base:    strings.TrimPrefix(suffix, "."),
+					fiction: m.Fiction,
+				})
 			}
 
 		case m.Type == "ip" && direction == directionR2F:
@@ -181,49 +244,58 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 			}
 
 		case m.Type == "org":
-			rw.addOrgRule(m, direction)
+			orgRules = append(orgRules, orgRule(m, direction))
 
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
 			replacements = append(replacements, m.Fiction)
+			bounded = append(bounded, isHostMapping(m.Type))
 			rw.explicit[strings.ToLower(m.Real)] = true
 
 		default:
 			patterns = append(patterns, m.Fiction)
 			replacements = append(replacements, m.Real)
+			bounded = append(bounded, isHostMapping(m.Type))
 		}
 	}
 
 	if len(patterns) > 0 {
-		rw.ac = newACMachine(patterns, replacements)
+		rw.ac = newACMachine(patterns, replacements, bounded)
 	}
 
+	rw.orgs = newAlternationRewriter(orgRules)
+
 	if direction == directionR2F {
-		rw.regex = compiledTermRegexes
+		rw.terms = termRewriter
 	}
 
 	return rw
 }
 
-// addOrgRule compiles an org mapping into a word-bounded regex so a short org
-// name ("ge", "hp") does not shred unrelated words ("message" -> "messaDEV...").
-func (rw *rewriter) addOrgRule(m mappingEntry, direction string) {
-	from, to := m.Real, m.Fiction
-	if direction != directionR2F {
-		from, to = m.Fiction, m.Real
+// isHostMapping reports whether a mapping's values are hostnames, and so must
+// not match inside a longer name. Types whose values are deliberately open
+// ended are excluded: "s3://acme" is meant to cover every bucket that starts
+// with it and "ACME-" every ticket, so there matching a longer string is the
+// point. Custom rules keep the same greedy behaviour.
+func isHostMapping(typ string) bool {
+	return typ == "domain" || typ == "email"
+}
+
+// orgRule orients an org mapping for the given direction. Org names go
+// through the word-bounded alternation so a short one ("ge", "hp") does not
+// shred unrelated words ("message" -> "messaDEV...").
+func orgRule(m mappingEntry, direction string) termEntry {
+	if direction == directionR2F {
+		return termEntry{From: m.Real, To: m.Fiction}
 	}
 
-	if re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(from) + `\b`); err == nil {
-		rw.orgRegex = append(rw.orgRegex, regexEntry{re: re, to: to})
-	}
+	return termEntry{From: m.Fiction, To: m.Real}
 }
 
 func (rw *rewriter) rewrite(text string) string {
 	// Wildcards first, or the exact-match pass rewrites the base domain inside
 	// an unmapped subdomain and leaks the label upstream.
-	for _, wc := range rw.wildcards {
-		text = rw.rewriteWildcard(text, wc)
-	}
+	text = rw.rewriteWildcards(text)
 
 	text = rw.rewriteIPs(text)
 
@@ -233,41 +305,106 @@ func (rw *rewriter) rewrite(text string) string {
 
 	// Org after the automaton, so a mapped domain is consumed before its bare
 	// org name is matched.
-	for _, r := range rw.orgRegex {
-		text = r.re.ReplaceAllString(text, r.to)
-	}
+	text = rw.orgs.rewrite(text)
 
-	for _, r := range rw.regex {
-		text = r.re.ReplaceAllString(text, r.to)
-	}
-
-	return text
+	return rw.terms.rewrite(text)
 }
 
-// rewriteWildcard replaces wc-covered subdomains lacking their own mapping;
-// explicit hosts are skipped so the exact pass gives them a reversible value.
-func (rw *rewriter) rewriteWildcard(text string, wc wildcardMapping) string {
-	base := strings.TrimPrefix(wc.suffix, ".")
+// rewriteWildcards replaces every wildcard-covered hostname that has no
+// mapping of its own; explicit hosts are left for the exact pass, which gives
+// them a reversible value.
+//
+// All wildcards share one scan. Scanning the whole text once per wildcard and
+// then calling strings.ReplaceAll for each match was the most expensive part
+// of a rewrite, and quadratic in the number of times a hostname appeared.
+func (rw *rewriter) rewriteWildcards(text string) string {
+	if len(rw.wildcards) == 0 {
+		return text
+	}
 
-	for _, match := range domainRegex.FindAllString(text, -1) {
+	locs := domainRegex.FindAllStringIndex(text, -1)
+	if locs == nil {
+		return text
+	}
+
+	var b strings.Builder
+
+	pos := 0
+
+	for _, loc := range locs {
 		// Compare lowercased so "API.AMAZON.COM" is caught before the exact
 		// pass rewrites its base and leaks the "API" label.
-		lower := strings.ToLower(match)
-		if lower == base || rw.explicit[lower] {
+		fiction, ok := rw.wildcardFiction(strings.ToLower(text[loc[0]:loc[1]]))
+		if !ok {
 			continue
 		}
 
-		if strings.HasSuffix(lower, wc.suffix) {
-			text = strings.ReplaceAll(text, match, wc.fiction)
+		b.WriteString(text[pos:loc[0]])
+		b.WriteString(fiction)
+
+		pos = loc[1]
+	}
+
+	if pos == 0 {
+		return text
+	}
+
+	b.WriteString(text[pos:])
+
+	return b.String()
+}
+
+// wildcardFiction returns the fiction covering host, which must already be
+// lowercased. Wildcards are tried in mapping order, so the longest suffix
+// registered first still wins.
+func (rw *rewriter) wildcardFiction(host string) (string, bool) {
+	if rw.explicit[host] {
+		return "", false
+	}
+
+	for _, wc := range rw.wildcards {
+		if host == wc.base {
+			continue
+		}
+
+		if strings.HasSuffix(host, wc.suffix) {
+			return wc.fiction, true
 		}
 	}
 
-	return text
+	return "", false
 }
 
+// mappingKeys returns the "type|real" key of every mapping in engDir. Callers
+// testing many candidates use it to read mappings.conf once instead of once
+// per candidate.
+func mappingKeys(engDir string) map[string]bool {
+	keys := map[string]bool{}
+
+	data, err := os.ReadFile(filepath.Join(engDir, "mappings.conf"))
+	if err != nil {
+		return keys
+	}
+
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if parts := strings.SplitN(line, "|", 3); len(parts) == 3 {
+			keys[parts[0]+"|"+parts[1]] = true
+		}
+	}
+
+	return keys
+}
+
+// mappingExists compares whole fields. A plain substring search also matched
+// mapping *content*, so a custom rule whose fiction text happened to contain
+// "domain|evil.com|" made that domain look mapped and it never got one.
 func mappingExists(engDir, typ, realVal string) bool {
-	data, _ := os.ReadFile(filepath.Join(engDir, "mappings.conf"))
-	return strings.Contains(string(data), typ+"|"+realVal+"|")
+	return mappingKeys(engDir)[typ+"|"+realVal]
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
@@ -283,16 +420,43 @@ func nextCounter(engDir, filename, defaultVal string) (int, error) {
 	unlock := acquireFileLock(path)
 	defer unlock()
 
-	n, err := strconv.Atoi(readFileContent(path))
+	n, err := readCounter(path, defaultVal)
 	if err != nil {
-		n, err = strconv.Atoi(defaultVal)
-		if err != nil {
-			return 0, fmt.Errorf("counter %s: invalid default %q: %w", filename, defaultVal, err)
-		}
+		return 0, err
 	}
 
 	if err := writeFileContent(path, strconv.Itoa(n+1)); err != nil {
 		return 0, err
+	}
+
+	return n, nil
+}
+
+// readCounter returns the next value to allocate from path. Only an absent or
+// empty file falls back to defaultVal: a file that exists but cannot be read
+// or parsed is an error, because restarting from the default would hand two
+// real targets the same fiction value and make the reverse pass ambiguous.
+func readCounter(path, defaultVal string) (int, error) {
+	name := filepath.Base(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("counter %s is unreadable: %w", name, err)
+	}
+
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		n, err := strconv.Atoi(defaultVal)
+		if err != nil {
+			return 0, fmt.Errorf("counter %s: invalid default %q: %w", name, defaultVal, err)
+		}
+
+		return n, nil
+	}
+
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("counter %s is corrupt (%q): refusing to reallocate fiction values", name, raw)
 	}
 
 	return n, nil
@@ -438,7 +602,8 @@ func ipCounterFromFiction(fiction string) (int, bool) {
 	high, err1 := strconv.Atoi(parts[0])
 	low, err2 := strconv.Atoi(parts[1])
 
-	if err1 != nil || err2 != nil || high < 0 || high > 255 || low < 1 || low > 255 {
+	// low is 1..254 and high 0..255: the exact range fictionIPFor emits.
+	if err1 != nil || err2 != nil || high < 0 || high > 255 || low < 1 || low > 254 {
 		return 0, false
 	}
 
@@ -508,9 +673,12 @@ func addDomain(engDir, domain, fictionOrg string) error {
 	baseDomain := extractBaseDomain(domain)
 	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
+	// One snapshot for all three checks: nothing is appended until the end.
+	existing := mappingKeys(engDir)
+
 	var lines []string
 
-	if !mappingExists(engDir, "domain", baseDomain) {
+	if !existing["domain|"+baseDomain] {
 		port, err := allocatePort(engDir, "domain "+baseDomain)
 		if err != nil {
 			return err
@@ -524,7 +692,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, baseMappingLines(baseDomain, port, orgNum, orgName, fiction)...)
 	}
 
-	if !mappingExists(engDir, "wildcard", "*."+baseDomain) {
+	if !existing["wildcard|*."+baseDomain] {
 		port, err := allocatePort(engDir, "wildcard *."+baseDomain)
 		if err != nil {
 			return err
@@ -533,7 +701,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, fmt.Sprintf("wildcard|*.%s|localhost:%d", baseDomain, port))
 	}
 
-	if domain != baseDomain && !mappingExists(engDir, "domain", domain) {
+	if domain != baseDomain && !existing["domain|"+domain] {
 		port, err := allocatePort(engDir, "subdomain "+domain)
 		if err != nil {
 			return err
@@ -550,9 +718,13 @@ func addDomain(engDir, domain, fictionOrg string) error {
 }
 
 func addIPMapping(engDir, ip string) error {
-	if c := canonicalIP(ip); c != "" {
-		ip = c
+	canonical := canonicalIP(ip)
+	if canonical == "" {
+		// Not an address, so there is nothing to map and nothing to leak.
+		return nil
 	}
+
+	ip = canonical
 
 	if isPrivateIP(ip) {
 		return nil
@@ -567,25 +739,31 @@ func addIPMapping(engDir, ip string) error {
 		return err
 	}
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return nil
-	}
-
-	var fictionIP string
-
-	if parsed.To4() != nil {
-		if n/254 > 255 {
-			logger.Warn("fiction IP range exhausted", "ip", ip)
-			return nil
-		}
-
-		fictionIP = fmt.Sprintf("127.0.%d.%d", n/254, n%254+1)
-	} else {
-		fictionIP = fmt.Sprintf("::ffff:127.0.%d.%d", n/254, n%254+1)
+	fictionIP, err := fictionIPFor(ip, n)
+	if err != nil {
+		return err
 	}
 
 	return addMapping(engDir, "ip", ip, fictionIP)
+}
+
+// fictionIPFor renders counter n as a loopback fiction matching the address
+// family of the real IP. Like allocatePort it refuses to continue once the
+// range is exhausted: an IP with no fiction counterpart reaches the model
+// verbatim. The guard covers both families, so IPv6 can no longer produce an
+// unparseable address such as "::ffff:127.0.275.151".
+func fictionIPFor(ip string, n int) (string, error) {
+	if n > maxFictionIPIndex {
+		return "", fmt.Errorf("fiction IP range exhausted for %s (would leak to upstream)", ip)
+	}
+
+	fiction := fmt.Sprintf("127.0.%d.%d", n/254, n%254+1)
+
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+		return "::ffff:" + fiction, nil
+	}
+
+	return fiction, nil
 }
 
 func isPrivateIP(ip string) bool {
@@ -724,6 +902,7 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 
 func findNewPublicIPs(text, engDir string) []string {
 	seen := make(map[string]bool)
+	existing := mappingKeys(engDir)
 	result := []string{}
 
 	candidates := ipv4Regex.FindAllString(text, -1)
@@ -737,7 +916,7 @@ func findNewPublicIPs(text, engDir string) []string {
 
 		seen[ip] = true
 
-		if isPrivateIP(ip) || mappingExists(engDir, "ip", ip) {
+		if isPrivateIP(ip) || existing["ip|"+ip] {
 			continue
 		}
 
@@ -761,6 +940,7 @@ func hasCommonTLD(domain string) bool {
 func findNewDomains(text, engDir string) []string {
 	seen := make(map[string]bool)    // candidates already examined
 	emitted := make(map[string]bool) // values already in result
+	existing := mappingKeys(engDir)  // mappings already on disk
 	result := []string{}
 
 	for _, raw := range domainRegex.FindAllString(text, -1) {
@@ -774,7 +954,7 @@ func findNewDomains(text, engDir string) []string {
 		// Base domain first so it gets the lower port and owns the derived
 		// org/email/path mappings; emitted dedupes the apex-only case.
 		for _, candidate := range []string{extractBaseDomain(domain), domain} {
-			if emitted[candidate] || mappingExists(engDir, "domain", candidate) {
+			if emitted[candidate] || existing["domain|"+candidate] {
 				continue
 			}
 

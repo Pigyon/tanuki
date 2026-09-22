@@ -122,6 +122,10 @@ func cmdInit(args []string) {
 		fatal("Usage: tanuki init <engagement-name> [--fiction-org NAME]")
 	}
 
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
+	}
+
 	if fictionOrg == "" {
 		fictionOrg = "DEVTARGET"
 	}
@@ -326,19 +330,19 @@ func cmdReset(args []string) {
 
 // stripTanukiHooks removes tanuki's hook entries from a parsed settings
 // map, dropping hook types (and the whole "hooks" key) left empty.
-func stripTanukiHooks(settings map[string]interface{}) {
-	hooks, ok := settings["hooks"].(map[string]interface{})
+func stripTanukiHooks(settings map[string]any) {
+	hooks, ok := settings["hooks"].(map[string]any)
 	if !ok {
 		return
 	}
 
 	for hookType, entries := range hooks {
-		arr, ok := entries.([]interface{})
+		arr, ok := entries.([]any)
 		if !ok {
 			continue
 		}
 
-		var filtered []interface{}
+		var filtered []any
 
 		for _, e := range arr {
 			if !isTanukiHookEntry(e) {
@@ -359,8 +363,8 @@ func stripTanukiHooks(settings map[string]interface{}) {
 }
 
 // stripTanukiEnv removes the proxy env var tanuki injected.
-func stripTanukiEnv(settings map[string]interface{}) {
-	env, ok := settings["env"].(map[string]interface{})
+func stripTanukiEnv(settings map[string]any) {
+	env, ok := settings["env"].(map[string]any)
 	if !ok {
 		return
 	}
@@ -378,12 +382,13 @@ func removeTanukiSettings(path string) {
 		return
 	}
 
-	var settings map[string]interface{}
+	var settings map[string]any
 
 	if json.Unmarshal(data, &settings) != nil {
-		_ = os.Remove(path)
-
-		fmt.Println("[tanuki] Removed .claude/settings.json")
+		// The file is the operator's, not tanuki's, and unparseable JSON is
+		// no reason to delete their configuration. Leave it and say so.
+		fmt.Println("[tanuki] Could not parse .claude/settings.json; left unchanged.")
+		fmt.Println("[tanuki] Remove the tanuki hooks and ANTHROPIC_BASE_URL by hand.")
 
 		return
 	}
@@ -417,6 +422,10 @@ func cmdActivate(args []string) {
 	}
 
 	name := args[0]
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
+	}
+
 	if !fileExists(engagementDir(name)) {
 		fatal(fmt.Sprintf("engagement %q not found", name))
 	}
@@ -435,7 +444,7 @@ func configureHooks() error {
 
 	settingsPath := filepath.Join(".claude", "settings.json")
 
-	var settings map[string]interface{}
+	var settings map[string]any
 
 	if raw, err := os.ReadFile(settingsPath); err == nil {
 		if json.Unmarshal(raw, &settings) != nil {
@@ -444,15 +453,15 @@ func configureHooks() error {
 	}
 
 	if settings == nil {
-		settings = make(map[string]interface{})
+		settings = make(map[string]any)
 	}
 
 	hookCmd := "docker exec -i tanuki /tanuki hook"
 
-	mkEntry := func(matcher, subcommand string) map[string]interface{} {
-		entry := map[string]interface{}{
-			"hooks": []interface{}{
-				map[string]interface{}{
+	mkEntry := func(matcher, subcommand string) map[string]any {
+		entry := map[string]any{
+			"hooks": []any{
+				map[string]any{
 					"type":    "command",
 					"command": hookCmd + " " + subcommand,
 					"timeout": 5,
@@ -467,21 +476,21 @@ func configureHooks() error {
 		return entry
 	}
 
-	tanukiHooks := map[string][]interface{}{
+	tanukiHooks := map[string][]any{
 		"PreToolUse":       {mkEntry("Bash|Edit|Write|WebFetch|Grep|Glob|Read", "pre-tool-use")},
 		"PostToolUse":      {mkEntry("", "post-tool-use")},
 		"UserPromptSubmit": {mkEntry("", "user-prompt-submit")},
 	}
 
-	hooks, _ := settings["hooks"].(map[string]interface{})
+	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
-		hooks = make(map[string]interface{})
+		hooks = make(map[string]any)
 	}
 
 	for hookType, tanukiEntries := range tanukiHooks {
-		var filtered []interface{}
+		var filtered []any
 
-		if existing, ok := hooks[hookType].([]interface{}); ok {
+		if existing, ok := hooks[hookType].([]any); ok {
 			for _, e := range existing {
 				if !isTanukiHookEntry(e) {
 					filtered = append(filtered, e)
@@ -495,9 +504,9 @@ func configureHooks() error {
 
 	settings["hooks"] = hooks
 
-	env, _ := settings["env"].(map[string]interface{})
+	env, _ := settings["env"].(map[string]any)
 	if env == nil {
-		env = make(map[string]interface{})
+		env = make(map[string]any)
 	}
 
 	env["ANTHROPIC_BASE_URL"] = "http://localhost:" + proxyPort()
@@ -511,19 +520,19 @@ func configureHooks() error {
 	return writeSharedFile(settingsPath, string(data))
 }
 
-func isTanukiHookEntry(entry interface{}) bool {
-	m, ok := entry.(map[string]interface{})
+func isTanukiHookEntry(entry any) bool {
+	m, ok := entry.(map[string]any)
 	if !ok {
 		return false
 	}
 
-	hooks, ok := m["hooks"].([]interface{})
+	hooks, ok := m["hooks"].([]any)
 	if !ok {
 		return false
 	}
 
 	for _, h := range hooks {
-		hm, ok := h.(map[string]interface{})
+		hm, ok := h.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -563,6 +572,10 @@ func cmdExport(args []string) {
 		}
 
 		name = eng
+	}
+
+	if err := validateEngagementName(name); err != nil {
+		fatal(err.Error())
 	}
 
 	engDir := engagementDir(name)
@@ -605,6 +618,11 @@ func readExport(path string) exportedEngagement {
 
 	if imported.Name == "" {
 		fatal("export file missing engagement name")
+	}
+
+	// The name comes from an untrusted file and becomes a path component.
+	if err := validateEngagementName(imported.Name); err != nil {
+		fatal(fmt.Sprintf("export file %s: %v", path, err))
 	}
 
 	return imported
