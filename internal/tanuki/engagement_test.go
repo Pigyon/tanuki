@@ -157,3 +157,57 @@ func TestFictionIPsAreValidAddresses(t *testing.T) {
 		}
 	}
 }
+
+// TestMappingExistsIgnoresMappingContent: the check used to be a substring
+// search over the whole file, so a mapping whose *value* looked like a
+// mappings.conf line satisfied it and the real domain was never mapped.
+func TestMappingExistsIgnoresMappingContent(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
+		t.Fatalf("addMapping: %v", err)
+	}
+
+	if mappingExists(engDir, "domain", "evil.com") {
+		t.Error("mappingExists matched inside another mapping's value")
+	}
+
+	if !mappingExists(engDir, "custom", "codeword") {
+		t.Error("mappingExists missed a real entry")
+	}
+}
+
+// TestFindNewDomainsIgnoresMappingContent is the leak that follows from it:
+// a domain wrongly considered mapped is never given a fiction.
+func TestFindNewDomainsIgnoresMappingContent(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
+		t.Fatalf("addMapping: %v", err)
+	}
+
+	found := findNewDomains("please scan evil.com today", engDir)
+	if len(found) == 0 {
+		t.Fatal("evil.com was treated as already mapped")
+	}
+}
+
+// TestMappingExistsMatchesWholeFields: a shorter real value must not match a
+// longer one that starts with it.
+func TestMappingExistsMatchesWholeFields(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "amazon.com")
+
+	if mappingExists(engDir, "domain", "amazon.c") {
+		t.Error("prefix of a mapped domain reported as mapped")
+	}
+
+	if !mappingExists(engDir, "domain", "amazon.com") {
+		t.Error("mapped domain reported as missing")
+	}
+}

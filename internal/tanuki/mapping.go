@@ -269,9 +269,36 @@ func (rw *rewriter) rewriteWildcard(text string, wc wildcardMapping) string {
 	return text
 }
 
+// mappingKeys returns the "type|real" key of every mapping in engDir. Callers
+// testing many candidates use it to read mappings.conf once instead of once
+// per candidate.
+func mappingKeys(engDir string) map[string]bool {
+	keys := map[string]bool{}
+
+	data, err := os.ReadFile(filepath.Join(engDir, "mappings.conf"))
+	if err != nil {
+		return keys
+	}
+
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if parts := strings.SplitN(line, "|", 3); len(parts) == 3 {
+			keys[parts[0]+"|"+parts[1]] = true
+		}
+	}
+
+	return keys
+}
+
+// mappingExists compares whole fields. A plain substring search also matched
+// mapping *content*, so a custom rule whose fiction text happened to contain
+// "domain|evil.com|" made that domain look mapped and it never got one.
 func mappingExists(engDir, typ, realVal string) bool {
-	data, _ := os.ReadFile(filepath.Join(engDir, "mappings.conf"))
-	return strings.Contains(string(data), typ+"|"+realVal+"|")
+	return mappingKeys(engDir)[typ+"|"+realVal]
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
@@ -540,9 +567,12 @@ func addDomain(engDir, domain, fictionOrg string) error {
 	baseDomain := extractBaseDomain(domain)
 	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
+	// One snapshot for all three checks: nothing is appended until the end.
+	existing := mappingKeys(engDir)
+
 	var lines []string
 
-	if !mappingExists(engDir, "domain", baseDomain) {
+	if !existing["domain|"+baseDomain] {
 		port, err := allocatePort(engDir, "domain "+baseDomain)
 		if err != nil {
 			return err
@@ -556,7 +586,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, baseMappingLines(baseDomain, port, orgNum, orgName, fiction)...)
 	}
 
-	if !mappingExists(engDir, "wildcard", "*."+baseDomain) {
+	if !existing["wildcard|*."+baseDomain] {
 		port, err := allocatePort(engDir, "wildcard *."+baseDomain)
 		if err != nil {
 			return err
@@ -565,7 +595,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, fmt.Sprintf("wildcard|*.%s|localhost:%d", baseDomain, port))
 	}
 
-	if domain != baseDomain && !mappingExists(engDir, "domain", domain) {
+	if domain != baseDomain && !existing["domain|"+domain] {
 		port, err := allocatePort(engDir, "subdomain "+domain)
 		if err != nil {
 			return err
@@ -766,6 +796,7 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 
 func findNewPublicIPs(text, engDir string) []string {
 	seen := make(map[string]bool)
+	existing := mappingKeys(engDir)
 	result := []string{}
 
 	candidates := ipv4Regex.FindAllString(text, -1)
@@ -779,7 +810,7 @@ func findNewPublicIPs(text, engDir string) []string {
 
 		seen[ip] = true
 
-		if isPrivateIP(ip) || mappingExists(engDir, "ip", ip) {
+		if isPrivateIP(ip) || existing["ip|"+ip] {
 			continue
 		}
 
@@ -803,6 +834,7 @@ func hasCommonTLD(domain string) bool {
 func findNewDomains(text, engDir string) []string {
 	seen := make(map[string]bool)    // candidates already examined
 	emitted := make(map[string]bool) // values already in result
+	existing := mappingKeys(engDir)  // mappings already on disk
 	result := []string{}
 
 	for _, raw := range domainRegex.FindAllString(text, -1) {
@@ -816,7 +848,7 @@ func findNewDomains(text, engDir string) []string {
 		// Base domain first so it gets the lower port and owns the derived
 		// org/email/path mappings; emitted dedupes the apex-only case.
 		for _, candidate := range []string{extractBaseDomain(domain), domain} {
-			if emitted[candidate] || mappingExists(engDir, "domain", candidate) {
+			if emitted[candidate] || existing["domain|"+candidate] {
 				continue
 			}
 
