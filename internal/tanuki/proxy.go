@@ -367,15 +367,23 @@ func responseRewriter() *rewriter {
 	return proxyCache.getRewriter(engagementDir(eng), directionF2R)
 }
 
-// anonymizeUpstreamBody rewrites a body's real values to fiction before it leaves.
-// It fails closed: no engagement / unreadable / empty mappings return an error.
+// anonymizeUpstreamBody rewrites a body's real values to fiction before it
+// leaves. It fails closed: no engagement, unreadable or empty mappings, and a
+// real value still present after the rewrite all return an error rather than
+// forward the body.
 func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	eng := currentEngagement()
 	if eng == "" {
 		return nil, errors.New("no active engagement (run: tanuki add <domain>)")
 	}
 
-	rw, err := proxyCache.rewriterOrError(engagementDir(eng), directionR2F)
+	engDir := engagementDir(eng)
+
+	if err := mapBodyTargets(engDir, string(body)); err != nil {
+		return nil, err
+	}
+
+	rw, err := proxyCache.rewriterOrError(engDir, directionR2F)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read mappings: %w", err)
 	}
@@ -384,5 +392,62 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 		return nil, errors.New("no target mappings configured (run: tanuki add <domain>)")
 	}
 
-	return []byte(rw.rewrite(string(body))), nil
+	out := rw.rewrite(string(body))
+
+	if err := checkResidual(out); err != nil {
+		return nil, err
+	}
+
+	return []byte(out), nil
+}
+
+// mapBodyTargets maps anything in the body that has no fiction yet. The hooks
+// already do this for the prompt the operator types and for tool output, but
+// nothing sees an @-mentioned file, a pasted block, CLAUDE.md or a session
+// resumed from elsewhere, and nothing sees anything at all when the proxy is
+// driven by a client other than Claude Code. Every byte bound for the API
+// passes through here, so this is the one place that covers all of them.
+func mapBodyTargets(engDir, body string) error {
+	domains, ips, err := mapTargets(engDir, body, false)
+	if err != nil {
+		return fmt.Errorf("cannot map new targets: %w", err)
+	}
+
+	if domains+ips == 0 {
+		return nil
+	}
+
+	logger.Info("auto-mapped new targets", "domains", domains, "ips", ips)
+	proxyCache.invalidate()
+
+	return nil
+}
+
+// checkResidual is the fail-closed gate. Detection runs before the rewrite, so
+// in a working pipeline nothing real is left; if something is, the rewriter
+// missed it and the body must not go upstream.
+//
+// The error names counts, never values. It is returned to the local client,
+// which may fold the text into its next prompt, so the values go to the log
+// the operator can read with "docker logs tanuki" instead.
+func checkResidual(body string) error {
+	residual := residualTargets(body)
+	if len(residual) == 0 {
+		return nil
+	}
+
+	logger.Warn("real values survived anonymization",
+		"count", len(residual),
+		"values", residual,
+	)
+
+	if onLeakPolicy() == onLeakWarn {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%d real value(s) would have been sent unanonymized; see the tanuki log "+
+			"(set TANUKI_ON_LEAK=warn to forward anyway)",
+		len(residual),
+	)
 }

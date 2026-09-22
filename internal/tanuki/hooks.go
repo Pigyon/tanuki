@@ -176,40 +176,16 @@ func hookPreToolUse() {
 	emitHookOutput(eventPreToolUse, map[string]any{"updatedInput": toolInput})
 }
 
-// autoMapTargets gives every unmapped domain and public IP in text a fiction,
-// so the value is covered from here on, and reports how many of each it
-// found. Both candidate lists are collected before anything is written, so
-// neither pass sees the other's mappings.
-//
+// autoMapTargets maps the new targets in text and reports how many it found.
 // A failure is logged rather than returned: a hook must not block the tool,
-// and the proxy refuses to forward anything it cannot anonymize anyway.
+// and the proxy maps and re-checks every body itself before forwarding it.
 func autoMapTargets(engDir, text string) (domains, ips int) {
-	newDomains := findNewDomains(text, engDir)
-	newIPs := findNewPublicIPs(text, engDir)
-
-	for _, domain := range newDomains {
-		if isHookDryRun {
-			logger.Info("dry-run: would auto-map domain", "domain", domain)
-			continue
-		}
-
-		if err := addDomain(engDir, domain, ""); err != nil {
-			logger.Error("failed to add domain", "domain", domain, "error", err)
-		}
+	domains, ips, err := mapTargets(engDir, text, isHookDryRun)
+	if err != nil {
+		logger.Error("auto-mapping failed", "error", err)
 	}
 
-	for _, ip := range newIPs {
-		if isHookDryRun {
-			logger.Info("dry-run: would auto-map IP", "ip", ip)
-			continue
-		}
-
-		if err := addIPMapping(engDir, ip); err != nil {
-			logger.Error("failed to add IP mapping", "ip", ip, "error", err)
-		}
-	}
-
-	return len(newDomains), len(newIPs)
+	return domains, ips
 }
 
 func hookPostToolUse() {

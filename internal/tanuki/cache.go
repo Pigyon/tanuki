@@ -86,6 +86,17 @@ func (c *rewriterCache) pick(direction string) *rewriter {
 	return c.f2r
 }
 
+// invalidate drops the cached rewriters so the next lookup rebuilds them from
+// disk. The proxy allocates mappings on the request path and must not race the
+// mtime check: a write landing inside the same filesystem timestamp tick as
+// the previous load would otherwise go unnoticed.
+func (c *rewriterCache) invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.lastModTime = 0
+}
+
 func fileMtime(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {
