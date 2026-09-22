@@ -168,7 +168,11 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		return len(sorted[i].Fiction) > len(sorted[j].Fiction)
 	})
 
-	var patterns, replacements []string
+	var (
+		patterns     []string
+		replacements []string
+		bounded      []bool
+	)
 
 	for _, m := range sorted {
 		switch {
@@ -190,16 +194,18 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
 			replacements = append(replacements, m.Fiction)
+			bounded = append(bounded, isHostMapping(m.Type))
 			rw.explicit[strings.ToLower(m.Real)] = true
 
 		default:
 			patterns = append(patterns, m.Fiction)
 			replacements = append(replacements, m.Real)
+			bounded = append(bounded, isHostMapping(m.Type))
 		}
 	}
 
 	if len(patterns) > 0 {
-		rw.ac = newACMachine(patterns, replacements)
+		rw.ac = newACMachine(patterns, replacements, bounded)
 	}
 
 	if direction == directionR2F {
@@ -207,6 +213,15 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 	}
 
 	return rw
+}
+
+// isHostMapping reports whether a mapping's values are hostnames, and so must
+// not match inside a longer name. Types whose values are deliberately open
+// ended are excluded: "s3://acme" is meant to cover every bucket that starts
+// with it and "ACME-" every ticket, so there matching a longer string is the
+// point. Custom rules keep the same greedy behaviour.
+func isHostMapping(typ string) bool {
+	return typ == "domain" || typ == "email"
 }
 
 // addOrgRule compiles an org mapping into a word-bounded regex so a short org

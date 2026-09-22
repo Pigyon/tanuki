@@ -23,13 +23,17 @@ type acMachine struct {
 	root     *acNode
 	patterns []string
 	replace  []string
+	// bounded marks patterns that are hostnames and so must not match inside
+	// a longer name; see dropContinuedMatches. A nil slice bounds nothing.
+	bounded []bool
 }
 
-func newACMachine(patterns, replacements []string) *acMachine {
+func newACMachine(patterns, replacements []string, bounded []bool) *acMachine {
 	m := &acMachine{
 		root:     &acNode{children: map[byte]*acNode{}},
 		patterns: patterns,
 		replace:  replacements,
+		bounded:  bounded,
 	}
 
 	for i, p := range patterns {
@@ -143,7 +147,7 @@ func (m *acMachine) replaceAll(text string) string {
 		return text
 	}
 
-	matches := m.search(text)
+	matches := m.dropContinuedMatches(text, m.search(text))
 	if len(matches) == 0 {
 		return text
 	}
@@ -166,6 +170,60 @@ func (m *acMachine) replaceAll(text string) string {
 	result = append(result, text[pos:]...)
 
 	return string(result)
+}
+
+// isLabelByte reports whether b can appear inside a hostname label.
+func isLabelByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
+		return true
+	case b == '-', b == '_':
+		return true
+	default:
+		return false
+	}
+}
+
+// domainContinues reports whether the text at i carries on a hostname, so the
+// match ending there is only a prefix of a longer name.
+func domainContinues(text string, i int) bool {
+	if i >= len(text) {
+		return false
+	}
+
+	if b := text[i]; b == '.' || b == '-' {
+		// A separator continues the name only when a label follows it, so
+		// "amazon.com." at the end of a sentence is still the whole host.
+		return i+1 < len(text) && isLabelByte(text[i+1])
+	}
+
+	return isLabelByte(text[i])
+}
+
+// dropContinuedMatches discards a bounded pattern that matched only the start
+// of a longer hostname, so the mapping for "acme.com" does not fire inside
+// "acme.community" or "acme.com.br" and rewrite half of a different name.
+//
+// Only the right-hand side is checked. Refusing a match that is *preceded* by
+// label bytes would leave "notacme.com" whole, and hiding the target matters
+// more than leaving an unrelated name intact; the org rule still covers the
+// bare label in whatever the automaton declines.
+func (m *acMachine) dropContinuedMatches(text string, matches []acMatch) []acMatch {
+	if m.bounded == nil {
+		return matches
+	}
+
+	kept := make([]acMatch, 0, len(matches))
+
+	for _, match := range matches {
+		if match.index < len(m.bounded) && m.bounded[match.index] && domainContinues(text, match.end) {
+			continue
+		}
+
+		kept = append(kept, match)
+	}
+
+	return kept
 }
 
 func selectLongestNonOverlapping(matches []acMatch, patterns []string) []acMatch {

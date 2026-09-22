@@ -755,3 +755,50 @@ func TestRewriteIsStableOnRepeatedApplication(t *testing.T) {
 		t.Errorf("rewrite is not idempotent\n  once:  %s\n  twice: %s", once, twice)
 	}
 }
+
+// TestLongerHostnamesAreNotHalfRewritten: the automaton declines a hostname
+// that only starts with a mapped one, and the org rule still hides the label,
+// so neither the real target nor a mangled fiction reaches the model.
+func TestLongerHostnamesAreNotHalfRewritten(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, _ := rewriters(t, engDir)
+
+	for _, text := range []string{
+		"host amazon.community",
+		"host amazon.com.br",
+		"mail bob@amazon.community",
+	} {
+		got := r2f.rewrite(text)
+
+		if strings.Contains(got, testFictionBase) {
+			t.Errorf("rewrite(%q) = %q: a longer hostname was half rewritten", text, got)
+		}
+
+		if strings.Contains(strings.ToLower(got), testOrgName) {
+			t.Errorf("rewrite(%q) = %q: the org label leaked", text, got)
+		}
+	}
+}
+
+// TestMappedHostStillRewritesAtDelimiters keeps the boundary check from
+// swallowing legitimate matches.
+func TestMappedHostStillRewritesAtDelimiters(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, _ := rewriters(t, engDir)
+
+	for _, text := range []string{
+		"visit amazon.com.",
+		"visit amazon.com/path",
+		"visit amazon.com:443",
+		"visit amazon.com, then",
+		"visit AMAZON.COM",
+	} {
+		if got := r2f.rewrite(text); strings.Contains(strings.ToLower(got), testBaseDomain) {
+			t.Errorf("rewrite(%q) = %q: mapped host was not rewritten", text, got)
+		}
+	}
+}
