@@ -26,6 +26,10 @@ const (
 // past it means a real value would have no fiction counterpart.
 const maxPort = 65535
 
+// maxFictionIPIndex is the highest ip_counter value that still renders inside
+// 127.0.0.0/16: the last address the scheme can produce is 127.0.255.254.
+const maxFictionIPIndex = 256*254 - 1
+
 type mappingEntry struct {
 	Type, Real, Fiction string
 }
@@ -465,7 +469,8 @@ func ipCounterFromFiction(fiction string) (int, bool) {
 	high, err1 := strconv.Atoi(parts[0])
 	low, err2 := strconv.Atoi(parts[1])
 
-	if err1 != nil || err2 != nil || high < 0 || high > 255 || low < 1 || low > 255 {
+	// low is 1..254 and high 0..255: the exact range fictionIPFor emits.
+	if err1 != nil || err2 != nil || high < 0 || high > 255 || low < 1 || low > 254 {
 		return 0, false
 	}
 
@@ -577,9 +582,13 @@ func addDomain(engDir, domain, fictionOrg string) error {
 }
 
 func addIPMapping(engDir, ip string) error {
-	if c := canonicalIP(ip); c != "" {
-		ip = c
+	canonical := canonicalIP(ip)
+	if canonical == "" {
+		// Not an address, so there is nothing to map and nothing to leak.
+		return nil
 	}
+
+	ip = canonical
 
 	if isPrivateIP(ip) {
 		return nil
@@ -594,25 +603,31 @@ func addIPMapping(engDir, ip string) error {
 		return err
 	}
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return nil
-	}
-
-	var fictionIP string
-
-	if parsed.To4() != nil {
-		if n/254 > 255 {
-			logger.Warn("fiction IP range exhausted", "ip", ip)
-			return nil
-		}
-
-		fictionIP = fmt.Sprintf("127.0.%d.%d", n/254, n%254+1)
-	} else {
-		fictionIP = fmt.Sprintf("::ffff:127.0.%d.%d", n/254, n%254+1)
+	fictionIP, err := fictionIPFor(ip, n)
+	if err != nil {
+		return err
 	}
 
 	return addMapping(engDir, "ip", ip, fictionIP)
+}
+
+// fictionIPFor renders counter n as a loopback fiction matching the address
+// family of the real IP. Like allocatePort it refuses to continue once the
+// range is exhausted: an IP with no fiction counterpart reaches the model
+// verbatim. The guard covers both families, so IPv6 can no longer produce an
+// unparseable address such as "::ffff:127.0.275.151".
+func fictionIPFor(ip string, n int) (string, error) {
+	if n > maxFictionIPIndex {
+		return "", fmt.Errorf("fiction IP range exhausted for %s (would leak to upstream)", ip)
+	}
+
+	fiction := fmt.Sprintf("127.0.%d.%d", n/254, n%254+1)
+
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+		return "::ffff:" + fiction, nil
+	}
+
+	return fiction, nil
 }
 
 func isPrivateIP(ip string) bool {

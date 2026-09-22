@@ -1,8 +1,10 @@
 package tanuki
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -114,5 +116,44 @@ func TestDistinctDomainsGetDistinctFictions(t *testing.T) {
 		}
 
 		seen[m.Fiction] = m.Real
+	}
+}
+
+// TestIPRangeExhaustionFailsClosed: an IP with no fiction counterpart reaches
+// the model verbatim, so allocation must fail rather than skip the mapping.
+func TestIPRangeExhaustionFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), strconv.Itoa(maxFictionIPIndex+1)); err != nil {
+		t.Fatalf("seeding ip_counter: %v", err)
+	}
+
+	if err := addIPMapping(engDir, "8.8.8.8"); err == nil {
+		t.Fatal("addIPMapping succeeded past the fiction range, want an error")
+	}
+}
+
+// TestFictionIPsAreValidAddresses covers the IPv6 branch, which used to skip
+// the range guard and emit values like "::ffff:127.0.275.151".
+func TestFictionIPsAreValidAddresses(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{2, 253, 254, 255, 64770, maxFictionIPIndex} {
+		for _, real := range []string{"8.8.8.8", "2001:db8::1"} {
+			fiction, err := fictionIPFor(real, n)
+			if err != nil {
+				t.Fatalf("fictionIPFor(%q, %d): %v", real, n, err)
+			}
+
+			if net.ParseIP(fiction) == nil {
+				t.Errorf("fictionIPFor(%q, %d) = %q, not a valid IP", real, n, fiction)
+			}
+
+			if got, ok := ipCounterFromFiction(fiction); !ok || got != n {
+				t.Errorf("ipCounterFromFiction(%q) = %d, %v; want %d, true", fiction, got, ok, n)
+			}
+		}
 	}
 }
