@@ -178,7 +178,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	copyProxyHeaders(w.Header(), resp.Header, willRewrite)
 	w.WriteHeader(resp.StatusCode)
-	h.forwardResponse(w, resp, isMessagesPath, isSSE)
+	forwardResponse(w, resp, isMessagesPath, isSSE)
 }
 
 // copyProxyHeaders copies non-hop-by-hop headers from src to dst, dropping
@@ -200,19 +200,19 @@ func copyProxyHeaders(dst, src http.Header, dropContentLength bool) {
 	}
 }
 
-func (h *proxyHandler) forwardResponse(w http.ResponseWriter, resp *http.Response, messagesPath, isSSE bool) {
+func forwardResponse(w http.ResponseWriter, resp *http.Response, messagesPath, isSSE bool) {
 	if !messagesPath {
-		h.forwardRaw(w, resp.Body)
+		forwardRaw(w, resp.Body)
 		return
 	}
 
 	rw := responseRewriter()
 	if isSSE {
-		h.streamSSEWithRewrite(w, resp.Body, rw)
+		streamSSEWithRewrite(w, resp.Body, rw)
 		return
 	}
 
-	h.forwardWithRewrite(w, resp.Body, rw)
+	forwardWithRewrite(w, resp.Body, rw)
 }
 
 // sseSink is the destination for rewritten SSE events. A nil flusher means
@@ -245,7 +245,7 @@ func (s sseSink) write(text string) {
 
 // streamSSEWithRewrite reverses fiction to real one SSE event at a time. A value
 // split across separate events is not rejoined (response direction, not a leak).
-func (h *proxyHandler) streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
+func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 	sink := newSSESink(w, rw)
 
 	var lineBuf bytes.Buffer
@@ -313,9 +313,13 @@ func flushCompleteEvents(buf *bytes.Buffer, sink sseSink) {
 	}
 }
 
-func (h *proxyHandler) forwardWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
+func forwardWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 	respBody, err := io.ReadAll(io.LimitReader(body, maxRespSize+1))
 	if err != nil {
+		// The upstream body failed mid-read. Say so: silently writing nothing
+		// leaves the client with an empty 200 and no clue why.
+		logger.Error("reading upstream response failed", "error", err)
+
 		return
 	}
 
@@ -332,7 +336,7 @@ func (h *proxyHandler) forwardWithRewrite(w http.ResponseWriter, body io.Reader,
 	_, _ = io.WriteString(w, text)
 }
 
-func (h *proxyHandler) forwardRaw(w http.ResponseWriter, body io.Reader) {
+func forwardRaw(w http.ResponseWriter, body io.Reader) {
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
 
