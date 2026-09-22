@@ -17,24 +17,24 @@ func TestACReplaceAll(t *testing.T) {
 	}{
 		{
 			name:         "single match",
-			patterns:     []string{"amazon.com"},
-			replacements: []string{"localhost:9000"},
+			patterns:     []string{testBaseDomain},
+			replacements: []string{testFictionBase},
 			input:        "go to amazon.com now",
 			expected:     "go to localhost:9000 now",
 		},
 		{
 			name:         "longest of two overlapping patterns wins",
-			patterns:     []string{"bounty.amazon.com", "amazon.com"},
-			replacements: []string{"localhost:9001", "localhost:9000"},
-			input:        "bounty.amazon.com",
-			expected:     "localhost:9001",
+			patterns:     []string{testSubDomain, testBaseDomain},
+			replacements: []string{testFictionWildcard, testFictionBase},
+			input:        testSubDomain,
+			expected:     testFictionWildcard,
 		},
 		{
 			name:         "longest wins regardless of pattern order",
-			patterns:     []string{"amazon.com", "bounty.amazon.com"},
-			replacements: []string{"localhost:9000", "localhost:9001"},
-			input:        "bounty.amazon.com",
-			expected:     "localhost:9001",
+			patterns:     []string{testBaseDomain, testSubDomain},
+			replacements: []string{testFictionBase, testFictionWildcard},
+			input:        testSubDomain,
+			expected:     testFictionWildcard,
 		},
 		{
 			name:         "repeated occurrences all replaced",
@@ -141,11 +141,11 @@ func TestACBinarySafety(t *testing.T) {
 
 func BenchmarkACReplaceAll(b *testing.B) {
 	patterns := []string{
-		"amazon.com", "bounty.amazon.com", "admin@amazon.com",
-		"52.94.236.248", "s3://amazon-prod", "/var/www/amazon/",
+		testBaseDomain, testSubDomain, "admin@amazon.com",
+		testPublicIP, "s3://amazon-prod", "/var/www/amazon/",
 	}
 	replacements := []string{
-		"localhost:9000", "localhost:9001", "admin@devtarget.local",
+		testFictionBase, testFictionWildcard, "admin@devtarget.local",
 		"127.0.0.2", "file:///tmp/devtarget-prod", "/dev/project/",
 	}
 

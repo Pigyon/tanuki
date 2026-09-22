@@ -102,12 +102,21 @@ linters:
       - testutils$
       - examples$
     rules:
-      # G304: engagement file paths are built from engagementDir (which rejects
-      # traversal), fixed .claude locations, or the operator-supplied CLI import.
+      # G304/G703 (path traversal, incl. taint analysis): engagement file paths
+      # are built from engagementDir, fixed .claude locations, or the
+      # operator-supplied CLI import path.
       - path: internal/tanuki
         linters:
           - gosec
-        text: G304
+        text: "G304|G703"
+      # G704 (SSRF): forwarding a caller-supplied request path to an
+      # operator-configured upstream is what this program is. The upstream
+      # comes from TANUKI_UPSTREAM, never from the request, and the proxy binds
+      # to localhost so the caller is the local Claude Code agent.
+      - path: internal/tanuki/proxy.go
+        linters:
+          - gosec
+        text: G704
       # G306: .claude config is deliberately world-readable so the host user's
       # Claude Code can read it across the container bind mount; it holds no secrets.
       - path: internal/tanuki/run.go
@@ -148,7 +157,8 @@ formatters:
     - gofumpt
   settings:
     gofumpt:
-      extra-rules: true
+      extra:
+        group-params: true
   exclusions:
     generated: lax
     paths:

@@ -76,7 +76,7 @@ func hookEnvelope(t *testing.T, out string) map[string]any {
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHookPreToolUseReversesInput(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	out := runHook(t, hookPreToolUse,
 		`{"tool_name":"Bash","tool_input":{"command":"curl http://localhost:9000/x"}}`)
@@ -100,7 +100,7 @@ func TestHookPreToolUseReversesInput(t *testing.T) {
 
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHookPostToolUseRewritesOutput(t *testing.T) {
-	engDir := setupEngagement(t, "amazon.com")
+	engDir := setupEngagement(t, testBaseDomain)
 
 	out := runHook(t, hookPostToolUse,
 		`{"tool_name":"Bash","tool_output":"reached amazon.com at 52.94.236.248"}`)
@@ -116,14 +116,14 @@ func TestHookPostToolUseRewritesOutput(t *testing.T) {
 		t.Fatalf("updatedToolOutput missing in %q", out)
 	}
 
-	for _, real := range []string{"amazon.com", "52.94.236.248"} {
+	for _, real := range []string{testBaseDomain, testPublicIP} {
 		if strings.Contains(rewritten, real) {
 			t.Errorf("real value %q leaked in tool output: %s", real, rewritten)
 		}
 	}
 
 	// The new public IP seen in output must have been auto-mapped.
-	if !mappingExists(engDir, "ip", "52.94.236.248") {
+	if !mappingExists(engDir, "ip", testPublicIP) {
 		t.Error("public IP in tool output was not auto-mapped")
 	}
 }
@@ -157,7 +157,7 @@ func TestHookUserPromptSubmitAutoMaps(t *testing.T) {
 //
 //nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHookEmitsEmptyObjectWhenNothingToDo(t *testing.T) {
-	setupEngagement(t, "amazon.com")
+	setupEngagement(t, testBaseDomain)
 
 	out := runHook(t, hookPreToolUse,
 		`{"tool_name":"Bash","tool_input":{"command":"echo nothing to rewrite"}}`)
