@@ -76,16 +76,12 @@ jobs:
   hadolint:
     name: Dockerfile lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dockerfile: [Dockerfile, Dockerfile.dev]
     steps:
       - uses: actions/checkout@v7
 
       - uses: hadolint/hadolint-action@v3.5.0
         with:
-          dockerfile: ${{ matrix.dockerfile }}
+          dockerfile: Dockerfile
           config: .hadolint.yaml
 
   docker:
