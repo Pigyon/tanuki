@@ -232,9 +232,7 @@ func newSSESink(w http.ResponseWriter, rw *rewriter) sseSink {
 // write rewrites text and sends it downstream, flushing so the client sees
 // each event as it arrives rather than at end of stream.
 func (s sseSink) write(text string) {
-	if s.rw != nil {
-		text = s.rw.rewrite(text)
-	}
+	text = reverseSSEEvent(text, s.rw)
 
 	_, _ = io.WriteString(s.w, text)
 
@@ -328,12 +326,7 @@ func forwardWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 		respBody = respBody[:maxRespSize]
 	}
 
-	text := string(respBody)
-	if rw != nil {
-		text = rw.rewrite(text)
-	}
-
-	_, _ = io.WriteString(w, text)
+	_, _ = io.WriteString(w, reverseBody(string(respBody), rw))
 }
 
 func forwardRaw(w http.ResponseWriter, body io.Reader) {
@@ -371,6 +364,9 @@ func responseRewriter() *rewriter {
 // leaves. It fails closed: no engagement, unreadable or empty mappings, and a
 // real value still present after the rewrite all return an error rather than
 // forward the body.
+//
+// A JSON body is rewritten string by string, never as raw text: see
+// structuralKeys for what raw rewriting did to the request itself.
 func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	eng := currentEngagement()
 	if eng == "" {
@@ -379,7 +375,14 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 
 	engDir := engagementDir(eng)
 
-	if err := mapBodyTargets(engDir, string(body)); err != nil {
+	doc, isJSON := decodeJSON(body)
+
+	text := string(body)
+	if isJSON {
+		text = jsonText(doc)
+	}
+
+	if err := mapBodyTargets(engDir, text); err != nil {
 		return nil, err
 	}
 
@@ -392,13 +395,23 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 		return nil, errors.New("no target mappings configured (run: tanuki add <domain>)")
 	}
 
-	out := rw.rewrite(string(body))
+	if !isJSON {
+		out := rw.rewrite(text)
 
-	if err := checkResidual(out); err != nil {
+		if err := checkResidual(out); err != nil {
+			return nil, err
+		}
+
+		return []byte(out), nil
+	}
+
+	doc = rewriteJSONStrings(doc, rw.rewrite)
+
+	if err := checkResidual(jsonText(doc)); err != nil {
 		return nil, err
 	}
 
-	return []byte(out), nil
+	return encodeJSON(doc)
 }
 
 // mapBodyTargets maps anything in the body that has no fiction yet. The hooks
