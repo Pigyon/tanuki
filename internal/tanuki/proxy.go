@@ -3,6 +3,7 @@ package tanuki
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ var hopByHopHeaders = map[string]bool{
 }
 
 const (
-	maxBodySize = 10 << 20 // 10 MB request body
+	maxBodySize = 32 << 20 // 32 MB request body, the Messages API's own limit
 	maxRespSize = 64 << 20 // 64 MB buffered response / SSE event
 )
 
@@ -117,12 +118,48 @@ type proxyHandler struct {
 	upstream string
 }
 
+// writeAPIError answers in the Anthropic error format, so Claude Code shows
+// the message. The status decides whether the client retries: a 4xx is
+// final, a 5xx is retried with backoff. A refusal is deterministic, so it is a
+// 4xx; retrying it would only make the operator wait to see it.
+func writeAPIError(w http.ResponseWriter, status int, msg string) {
+	errType := "api_error"
+
+	switch status {
+	case http.StatusBadRequest:
+		errType = "invalid_request_error"
+	case http.StatusRequestEntityTooLarge:
+		errType = "request_too_large"
+	}
+
+	type apiErrorDetail struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+
+	body, _ := json.Marshal(struct {
+		Type  string         `json:"type"`
+		Error apiErrorDetail `json:"error"`
+	}{"error", apiErrorDetail{errType, "tanuki: " + msg}})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Del("Content-Length")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadGateway)
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body exceeds %d MB", maxBodySize>>20))
+			return
+		}
+
+		writeAPIError(w, http.StatusBadRequest, "failed to read request body")
+
 		return
 	}
 
@@ -135,7 +172,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// Fail closed: never forward a prompt body we could not anonymize.
 			logger.Warn("refusing to forward request unanonymized", "path", r.URL.Path, "reason", err.Error())
-			http.Error(w, "tanuki refused to forward request: "+err.Error(), http.StatusServiceUnavailable)
+			writeAPIError(w, http.StatusBadRequest, "refused to forward request: "+err.Error())
 
 			return
 		}
@@ -145,7 +182,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, h.upstream+r.URL.RequestURI(), bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, "failed to create request", http.StatusBadGateway)
+		writeAPIError(w, http.StatusBadGateway, "failed to create upstream request")
 		return
 	}
 
@@ -159,14 +196,14 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := httpClient.Do(proxyReq)
 	if err != nil {
-		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+		// A 5xx, so the client retries: a dropped connection is transient.
+		writeAPIError(w, http.StatusBadGateway, "upstream error: "+err.Error())
 		return
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	isSSE := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
-	willRewrite := isMessagesPath && (isSSE || resp.ContentLength != 0)
 
 	logger.Info("proxied request",
 		"method", r.Method,
@@ -176,9 +213,18 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"sse", isSSE,
 	)
 
-	copyProxyHeaders(w.Header(), resp.Header, willRewrite)
-	w.WriteHeader(resp.StatusCode)
-	forwardResponse(w, resp, isMessagesPath, isSSE)
+	copyProxyHeaders(w.Header(), resp.Header, isMessagesPath)
+
+	switch {
+	case !isMessagesPath:
+		w.WriteHeader(resp.StatusCode)
+		forwardRaw(w, resp.Body)
+	case isSSE:
+		w.WriteHeader(resp.StatusCode)
+		streamSSEWithRewrite(w, resp.Body, responseRewriter())
+	default:
+		forwardWithRewrite(w, resp, responseRewriter())
+	}
 }
 
 // copyProxyHeaders copies non-hop-by-hop headers from src to dst, dropping
@@ -198,21 +244,6 @@ func copyProxyHeaders(dst, src http.Header, dropContentLength bool) {
 			dst.Add(key, val)
 		}
 	}
-}
-
-func forwardResponse(w http.ResponseWriter, resp *http.Response, messagesPath, isSSE bool) {
-	if !messagesPath {
-		forwardRaw(w, resp.Body)
-		return
-	}
-
-	rw := responseRewriter()
-	if isSSE {
-		streamSSEWithRewrite(w, resp.Body, rw)
-		return
-	}
-
-	forwardWithRewrite(w, resp.Body, rw)
 }
 
 // sseSink is the destination for rewritten SSE events. A nil flusher means
@@ -311,21 +342,26 @@ func flushCompleteEvents(buf *bytes.Buffer, sink sseSink) {
 	}
 }
 
-func forwardWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
-	respBody, err := io.ReadAll(io.LimitReader(body, maxRespSize+1))
+// forwardWithRewrite reads the whole response before sending the status, so a
+// failed or oversized read can still become an error the client sees and
+// retries, instead of a 200 with an empty or truncated JSON body.
+func forwardWithRewrite(w http.ResponseWriter, resp *http.Response, rw *rewriter) {
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxRespSize+1))
 	if err != nil {
-		// The upstream body failed mid-read. Say so: silently writing nothing
-		// leaves the client with an empty 200 and no clue why.
 		logger.Error("reading upstream response failed", "error", err)
+		writeAPIError(w, http.StatusBadGateway, "reading upstream response failed")
 
 		return
 	}
 
 	if len(respBody) > maxRespSize {
-		logger.Warn("response exceeded rewrite limit; truncating", "limit", maxRespSize)
-		respBody = respBody[:maxRespSize]
+		logger.Error("upstream response exceeded rewrite limit", "limit", maxRespSize)
+		writeAPIError(w, http.StatusBadGateway, "upstream response exceeds rewrite limit")
+
+		return
 	}
 
+	w.WriteHeader(resp.StatusCode)
 	_, _ = io.WriteString(w, reverseBody(string(respBody), rw))
 }
 

@@ -305,7 +305,7 @@ It exits non-zero when it finds something, so it drops into a pre-submission hoo
 
 The proxy will not forward a prompt it cannot anonymize.
 
-**Every body is checked after it is rewritten.** The last thing that happens before a `/v1/messages` request leaves is a re-scan for anything that still looks like a real target. If one survived, the request is refused with `503` and the value is written to the tanuki log — never into the HTTP response, which the client may fold into its next prompt. In a working pipeline this never fires; when it does, it means the rewriter missed something and the body must not go upstream.
+**Every body is checked after it is rewritten.** The last thing that happens before a `/v1/messages` request leaves is a re-scan for anything that still looks like a real target. If one survived, the request is refused with `400` and the value is written to the tanuki log — never into the HTTP response, which the client may fold into its next prompt. In a working pipeline this never fires; when it does, it means the rewriter missed something and the body must not go upstream.
 
 **Targets are mapped wherever they first appear.** The hooks only observe the prompt you type and the output of tools you run. A target reaching the conversation any other way — an `@`-mentioned file, a paste, `CLAUDE.md`, a session resumed elsewhere, or any client that is not Claude Code — is never seen by them. The proxy therefore runs the same detection over every outbound body itself, so a value that has no fiction gets one before the rewrite rather than travelling upstream in the clear.
 
