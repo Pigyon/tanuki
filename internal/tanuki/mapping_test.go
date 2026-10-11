@@ -835,3 +835,31 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestHyphenatedNamesRoundTrip: the old ticket mapping ("ACME-" -> "DT-")
+// matched any "acme-" case-insensitively and reversed it upper-cased, so
+// "cd acme-api" came back as "cd ACME-api", a directory that does not exist.
+// Ticket lines left in an older engagement must be ignored too.
+//
+//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
+func TestHyphenatedNamesRoundTrip(t *testing.T) {
+	engDir := setupEngagement(t, "acme.com")
+
+	if err := addMapping(engDir, "ticket", "ACME-", "DT-"); err != nil {
+		t.Fatal(err)
+	}
+
+	mappings := loadMappings(engDir)
+	for _, m := range mappings {
+		if m.Type == "ticket" {
+			t.Fatalf("ticket mapping still loaded: %+v", m)
+		}
+	}
+
+	const in = "cd acme-api && cat data-loader.js"
+
+	back := newRewriter(mappings, directionF2R).rewrite(newRewriter(mappings, directionR2F).rewrite(in))
+	if back != in {
+		t.Errorf("round trip changed the text:\n got %q\nwant %q", back, in)
+	}
+}

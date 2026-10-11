@@ -134,7 +134,7 @@ On startup the proxy auto-configures the Claude Code hooks and proxy env in `.cl
 When you type _"check bounty.amazon.com for SQL injection"_, the `UserPromptSubmit` hook:
 
 1. Detects `amazon.com` and `bounty.amazon.com` as new domains
-2. Creates all derivative mappings (org, email, path, cloud, ticket)
+2. Creates all derivative mappings (org, email, path, cloud)
 3. Hands off to the proxy, which rewrites the prompt before it reaches the API
 
 ### Wrapper script
@@ -225,7 +225,6 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |
 | Cloud resources | Derived from org name                  | `file:///tmp/devtarget...` |
-| Ticket prefixes | Derived from org name                  | `DT-`                      |
 | Custom rules    | User-defined via env or CLI            | User-defined               |
 
 ### Terminology (built-in, applied to all engagements)
