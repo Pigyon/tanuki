@@ -28,6 +28,8 @@ services:
       #- TANUKI_IPS=93.184.216.34
       ## Custom rewrite rules (semicolon-separated, pipe-delimited real|fiction):
       #- TANUKI_RULES=John Smith|Jane Developer;Project Phoenix|Test Alpha
+      ## Domains never treated as targets (comma-separated, covers subdomains):
+      #- TANUKI_IGNORE=example-cdn.net
       ## Forward instead of refusing when a real value survives the rewrite.
       ## For diagnosing a false positive; it gives up the fail-closed guarantee:
       #- TANUKI_ON_LEAK=warn

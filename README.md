@@ -247,6 +247,7 @@ Set in `compose.yaml`:
 | `TANUKI_DOMAINS`     | _(none)_                    | Comma-separated domains to pre-seed                      |
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
 | `TANUKI_RULES`       | _(none)_                    | Custom rules: `real\|fiction` pairs, semicolon-separated |
+| `TANUKI_IGNORE`      | _(none)_                    | Comma-separated domains never treated as targets (subdomains included). `anthropic.com`, `claude.com` and `claude.ai` are always ignored |
 | `TANUKI_UID` / `TANUKI_GID` | `1000`               | Owner for a `.claude/` directory Docker had to create; an existing one keeps its owner |
 | `TANUKI_DEBUG`       | _(none)_                    | Set to any non-empty value to enable debug logging       |
 | `TANUKI_ON_LEAK`     | `refuse`                    | `refuse` or `warn` when a real value survives the rewrite |
@@ -266,7 +267,7 @@ Set in `compose.yaml`:
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
-- **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~75 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. Domains with unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
+- **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~70 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. TLDs that collide with everyday code (`.info`, `.name`, `.app`, `.store`, `.top`, `.site`, as in `logger.info` or `user.name`) are left out. Domains on those or other unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
 - **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
 
 ## Verifying an engagement

@@ -957,7 +957,7 @@ func findNewDomains(text, engDir string) []string {
 
 	for _, raw := range domainRegex.FindAllString(text, -1) {
 		domain := strings.ToLower(raw)
-		if !hasCommonTLD(domain) || seen[domain] {
+		if !hasCommonTLD(domain) || seen[domain] || isIgnoredDomain(domain) {
 			continue
 		}
 

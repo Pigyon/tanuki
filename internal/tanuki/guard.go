@@ -3,6 +3,8 @@ package tanuki
 import (
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 )
 
@@ -21,6 +23,30 @@ func onLeakPolicy() string {
 	}
 
 	return onLeakRefuse
+}
+
+// builtinIgnored are never targets, and Claude Code sends them on every
+// request: the provider's own domains, named in its system prompt, and the
+// JSON Schema dialect URL in every tool schema. Anonymizing them hides nothing
+// and mapped "claude" as an org, which rewrote the model name.
+var builtinIgnored = []string{"anthropic.com", "claude.ai", "claude.com", "json-schema.org"}
+
+// isIgnoredDomain reports whether domain, or the base domain it belongs to, is
+// built in or listed in TANUKI_IGNORE (comma-separated). Ignored domains are
+// neither auto-mapped nor reported by the residual check; "tanuki add" still
+// maps one explicitly.
+func isIgnoredDomain(domain string) bool {
+	domain = strings.ToLower(domain)
+	base := extractBaseDomain(domain)
+
+	for _, ig := range slices.Concat(builtinIgnored, strings.Split(os.Getenv("TANUKI_IGNORE"), ",")) {
+		ig = strings.ToLower(strings.TrimSpace(ig))
+		if ig != "" && (ig == domain || ig == base) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // mapTargets gives every unmapped domain and public IP in text a fiction and
@@ -72,7 +98,7 @@ func residualTargets(text string) []string {
 
 	for _, raw := range domainRegex.FindAllString(text, -1) {
 		domain := strings.ToLower(raw)
-		if !hasCommonTLD(domain) || seen[domain] {
+		if !hasCommonTLD(domain) || seen[domain] || isIgnoredDomain(domain) {
 			continue
 		}
 
