@@ -43,7 +43,7 @@ func TestCacheReportsReadError(t *testing.T) {
 
 // TestCacheDoesNotCacheReadError is a regression test: when stat succeeds but
 // the read fails (here mappings.conf is a directory), the error must not be
-// cached with a non-zero mtime, or the proxy 503s until the mtime changes.
+// cached with a non-zero mtime, or the proxy refuses until the mtime changes.
 func TestCacheDoesNotCacheReadError(t *testing.T) {
 	t.Parallel()
 

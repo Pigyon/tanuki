@@ -1,6 +1,7 @@
 package tanuki
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -133,8 +134,8 @@ func TestProxyFailsClosedWithoutEngagement(t *testing.T) {
 	proxy := newProxy(t, up.URL)
 
 	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"`+testBaseDomain+`"}`)
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", status)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
 	}
 
 	select {
@@ -159,8 +160,8 @@ func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 	// reason to refuse; a body naming a target is covered by
 	// TestProxyMapsOnFirstSightInsteadOfRefusing.
 	status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"nothing to rewrite here"}`)
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", status)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
 	}
 
 	select {
@@ -239,5 +240,86 @@ func TestProxyReversesSSEResponse(t *testing.T) {
 
 	if strings.Contains(body, testFictionBase) {
 		t.Errorf("fiction leaked to client in SSE: %s", body)
+	}
+}
+
+// TestProxyRejectsOversizedBodyAsFinal: over the limit was a 502, which the
+// client retries; it is a 413 now, and the limit matches the API's 32 MB.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestProxyRejectsOversizedBodyAsFinal(t *testing.T) {
+	setupEngagement(t, testBaseDomain)
+
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	proxy := newProxy(t, up.URL)
+
+	// Screenshots are what make a body large: 11 MB of base64 is under the
+	// limit, and is neither rewritten nor scanned.
+	under := `{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` +
+		strings.Repeat("A", 11<<20) + `"}}]}`
+	if status, body := post(t, proxy.URL, "/v1/messages", under); status != http.StatusOK {
+		t.Fatalf("11 MB body: status %d (%s), want 200", status, body)
+	}
+
+	status, body := post(t, proxy.URL, "/v1/messages", strings.Repeat("a", maxBodySize+1))
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", status)
+	}
+
+	if !strings.Contains(body, `"request_too_large"`) {
+		t.Errorf("error is not in the Anthropic format: %s", body)
+	}
+}
+
+// TestProxyRefusalIsAnAPIError: Claude Code shows the message of an error in
+// the Anthropic format; a plain-text 503 was retried and then shown as noise.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestProxyRefusalIsAnAPIError(t *testing.T) {
+	setupEngagement(t)
+
+	proxy := newProxy(t, newUpstream(t, func(http.ResponseWriter, *http.Request) {}).URL)
+
+	status, body := post(t, proxy.URL, "/v1/messages", `{"content":"nothing to rewrite here"}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+
+	var apiErr struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal([]byte(body), &apiErr); err != nil {
+		t.Fatalf("refusal is not JSON: %q", body)
+	}
+
+	if apiErr.Type != "error" || apiErr.Error.Type != "invalid_request_error" ||
+		!strings.HasPrefix(apiErr.Error.Message, "tanuki: ") {
+		t.Errorf("unexpected error shape: %+v", apiErr)
+	}
+}
+
+// TestProxyReportsBrokenUpstreamBody: the status used to go out before the
+// body was read, so a dropped upstream became a 200 with an empty body.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestProxyReportsBrokenUpstreamBody(t *testing.T) {
+	setupEngagement(t, testBaseDomain)
+
+	up := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, `{"partial":`)
+	})
+	proxy := newProxy(t, up.URL)
+
+	if status, _ := post(t, proxy.URL, "/v1/messages", `{"content":"hi"}`); status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", status)
 	}
 }
