@@ -207,7 +207,7 @@ func ensureEngagement() (string, error) {
 
 	engDir := engagementDir(name)
 	if !fileExists(engDir) {
-		if err := seedEngagement(engDir, "DEVTARGET"); err != nil {
+		if err := seedEngagement(engDir, defaultFictionOrg); err != nil {
 			return "", err
 		}
 	}

@@ -31,7 +31,7 @@ func setupEngagement(t *testing.T, domains ...string) string {
 	t.Setenv("TANUKI_DATA", dataRoot)
 
 	engDir := filepath.Join(dataRoot, "eng")
-	if err := seedEngagement(engDir, "DEVTARGET"); err != nil {
+	if err := seedEngagement(engDir, defaultFictionOrg); err != nil {
 		t.Fatalf("seedEngagement: %v", err)
 	}
 
