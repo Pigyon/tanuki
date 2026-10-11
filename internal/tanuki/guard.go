@@ -52,29 +52,17 @@ func isIgnoredDomain(domain string) bool {
 // mapTargets gives every unmapped domain and public IP in text a fiction and
 // reports how many of each it found. Both candidate lists are collected before
 // anything is written, so neither pass sees the other's mappings.
-//
-// dryRun logs the allocations it would make and writes nothing.
-func mapTargets(engDir, text string, dryRun bool) (domains, ips int, err error) {
+func mapTargets(engDir, text string) (domains, ips int, err error) {
 	newDomains := findNewDomains(text, engDir)
 	newIPs := findNewPublicIPs(text, engDir)
 
 	for _, domain := range newDomains {
-		if dryRun {
-			logger.Info("dry-run: would auto-map domain", "domain", domain)
-			continue
-		}
-
 		if addErr := addDomain(engDir, domain, ""); addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
 		}
 	}
 
 	for _, ip := range newIPs {
-		if dryRun {
-			logger.Info("dry-run: would auto-map IP", "ip", ip)
-			continue
-		}
-
 		if addErr := addIPMapping(engDir, ip); addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping IP %s: %w", ip, addErr))
 		}

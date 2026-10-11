@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -98,56 +97,16 @@ func TestHookPreToolUseReversesInput(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
-func TestHookPostToolUseRewritesOutput(t *testing.T) {
-	engDir := setupEngagement(t, testBaseDomain)
-
-	out := runHook(t, hookPostToolUse,
-		`{"tool_name":"Bash","tool_output":"reached amazon.com at 52.94.236.248"}`)
-
-	hso := hookEnvelope(t, out)
-
-	if hso["hookEventName"] != eventPostToolUse {
-		t.Errorf("hookEventName = %v, want %q", hso["hookEventName"], eventPostToolUse)
-	}
-
-	rewritten, _ := hso["updatedToolOutput"].(string)
-	if rewritten == "" {
-		t.Fatalf("updatedToolOutput missing in %q", out)
-	}
-
-	for _, real := range []string{testBaseDomain, testPublicIP} {
-		if strings.Contains(rewritten, real) {
-			t.Errorf("real value %q leaked in tool output: %s", real, rewritten)
-		}
-	}
-
-	// The new public IP seen in output must have been auto-mapped.
-	if !mappingExists(engDir, "ip", testPublicIP) {
-		t.Error("public IP in tool output was not auto-mapped")
-	}
-}
-
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
-func TestHookUserPromptSubmitAutoMaps(t *testing.T) {
-	engDir := setupEngagement(t)
-
-	out := runHook(t, hookUserPromptSubmit,
-		`{"prompt":"check bounty.target.com for issues"}`)
-
-	hso := hookEnvelope(t, out)
-
-	if hso["hookEventName"] != eventUserPromptSubmit {
-		t.Errorf("hookEventName = %v, want %q", hso["hookEventName"], eventUserPromptSubmit)
-	}
-
-	if ctx, _ := hso["additionalContext"].(string); ctx == "" {
-		t.Errorf("additionalContext missing in %q", out)
-	}
-
-	for _, d := range []string{"target.com", "bounty.target.com"} {
-		if !mappingExists(engDir, "domain", d) {
-			t.Errorf("domain %q from prompt was not auto-mapped", d)
+// TestHookLegacyEventsAreNoops pins the hooks older versions installed: until
+// the proxy restarts and rewrites settings.json, Claude Code still calls them,
+// and they must answer "{}" rather than fail.
+//
+//nolint:paralleltest // runHook swaps the process-wide os.Stdin and os.Stdout.
+func TestHookLegacyEventsAreNoops(t *testing.T) {
+	for _, name := range []string{"post-tool-use", "user-prompt-submit"} {
+		out := runHook(t, func() { cmdHook([]string{name}) }, `{"prompt":"check bounty.target.com"}`)
+		if out != "{}" {
+			t.Errorf("hook %s: got %q, want %q", name, out, "{}")
 		}
 	}
 }
