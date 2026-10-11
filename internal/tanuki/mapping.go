@@ -189,7 +189,13 @@ func parseMappings(data, engDir string) []mappingEntry {
 
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) == 3 {
-			mappings = append(mappings, mappingEntry{Type: parts[0], Real: parts[1], Fiction: parts[2]})
+			// Older engagements derived a "ticket" prefix per org. It matched
+			// case-insensitively inside any hyphenated word and reversed to
+			// upper case ("acme-api" came back as "ACME-api"), so it is skipped.
+			if parts[0] != "ticket" {
+				mappings = append(mappings, mappingEntry{Type: parts[0], Real: parts[1], Fiction: parts[2]})
+			}
+
 			continue
 		}
 
@@ -278,8 +284,8 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 // isHostMapping reports whether a mapping's values are hostnames, and so must
 // not match inside a longer name. Types whose values are deliberately open
 // ended are excluded: "s3://acme" is meant to cover every bucket that starts
-// with it and "ACME-" every ticket, so there matching a longer string is the
-// point. Custom rules keep the same greedy behaviour.
+// with it, so there matching a longer string is the point. Custom rules keep
+// the same greedy behaviour.
 func isHostMapping(typ string) bool {
 	return typ == "domain" || typ == "email"
 }
@@ -503,22 +509,12 @@ func extractOrgName(domain string) string {
 	return domain
 }
 
-// baseMappingLines builds the domain mapping and the org, email, path, cloud,
-// and ticket values derived from it. Every fiction is tied to fictionOrg/orgNum
-// so distinct real orgs reverse to distinct targets instead of colliding.
-func baseMappingLines(baseDomain string, port, orgNum int, orgName, fictionOrg string) []string {
+// baseMappingLines builds the domain mapping and the org, email, path, and
+// cloud values derived from it. Every fiction is tied to fictionOrg so distinct
+// real orgs reverse to distinct targets instead of colliding.
+func baseMappingLines(baseDomain string, port int, orgName, fictionOrg string) []string {
 	org := strings.ToLower(orgName)
 	fictionLower := strings.ToLower(fictionOrg)
-
-	ticketReal := strings.ToUpper(org)
-	if len(ticketReal) > 4 {
-		ticketReal = ticketReal[:4]
-	}
-
-	ticketFiction := "DT"
-	if orgNum > 1 {
-		ticketFiction += strconv.Itoa(orgNum)
-	}
 
 	return []string{
 		fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port),
@@ -526,23 +522,22 @@ func baseMappingLines(baseDomain string, port, orgNum int, orgName, fictionOrg s
 		fmt.Sprintf("email|@%s|@%s.local", baseDomain, fictionLower),
 		fmt.Sprintf("path|/%s/|/dev/%s/", org, fictionLower),
 		fmt.Sprintf("cloud|s3://%s|file:///tmp/%s", org, fictionLower),
-		fmt.Sprintf("ticket|%s-|%s-", ticketReal, ticketFiction),
 	}
 }
 
 // allocateOrgFiction returns the next distinct fiction org: the base name for
 // the first org, then base+2, base+3, … so no two real orgs share a fiction.
-func allocateOrgFiction(engDir, base string) (num int, fiction string, err error) {
+func allocateOrgFiction(engDir, base string) (string, error) {
 	n, err := nextCounter(engDir, "org_counter", "1")
 	if err != nil {
-		return 0, "", err
+		return "", err
 	}
 
 	if n < 2 {
-		return n, base, nil
+		return base, nil
 	}
 
-	return n, base + strconv.Itoa(n), nil
+	return base + strconv.Itoa(n), nil
 }
 
 // orgNumberFromFiction recovers the allocation number from a fiction org (its
@@ -698,12 +693,12 @@ func addDomain(engDir, domain, fictionOrg string) error {
 			return err
 		}
 
-		orgNum, fiction, err := allocateOrgFiction(engDir, baseFiction)
+		fiction, err := allocateOrgFiction(engDir, baseFiction)
 		if err != nil {
 			return err
 		}
 
-		lines = append(lines, baseMappingLines(baseDomain, port, orgNum, orgName, fiction)...)
+		lines = append(lines, baseMappingLines(baseDomain, port, orgName, fiction)...)
 	}
 
 	if !existing["wildcard|*."+baseDomain] {
