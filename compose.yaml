@@ -16,6 +16,10 @@ services:
       - TANUKI_DATA=/data
       - TANUKI_PROXY_PORT=18080
       - TANUKI_UPSTREAM=https://api.anthropic.com
+      # Owner for a .claude/ directory Docker had to create as root. An
+      # existing directory keeps its own owner. Set these if your uid is not 1000.
+      - TANUKI_UID=${TANUKI_UID:-1000}
+      - TANUKI_GID=${TANUKI_GID:-1000}
       ## Custom fiction org name (default: DEVTARGET):
       #- TANUKI_FICTION_ORG=ACMECORP
       ## Pre-seed target domains (comma-separated):
@@ -31,6 +35,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # The container runs as root but .claude/ belongs to you: DAC_OVERRIDE lets
+    # it write there, CHOWN hands the files it writes back to you.
+    cap_add:
+      - DAC_OVERRIDE
+      - CHOWN
     read_only: true
     restart: unless-stopped
 

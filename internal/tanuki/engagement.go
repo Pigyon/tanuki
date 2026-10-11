@@ -419,6 +419,8 @@ func configureHooks() error {
 		return fmt.Errorf("creating .claude directory: %w", err)
 	}
 
+	giveToHostUser(".claude")
+
 	settingsPath := filepath.Join(".claude", "settings.json")
 
 	var settings map[string]any

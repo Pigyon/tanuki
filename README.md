@@ -248,6 +248,7 @@ Set in `compose.yaml`:
 | `TANUKI_DOMAINS`     | _(none)_                    | Comma-separated domains to pre-seed                      |
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
 | `TANUKI_RULES`       | _(none)_                    | Custom rules: `real\|fiction` pairs, semicolon-separated |
+| `TANUKI_UID` / `TANUKI_GID` | `1000`               | Owner for a `.claude/` directory Docker had to create; an existing one keeps its owner |
 | `TANUKI_DEBUG`       | _(none)_                    | Set to any non-empty value to enable debug logging       |
 | `TANUKI_ON_LEAK`     | `refuse`                    | `refuse` or `warn` when a real value survives the rewrite |
 
