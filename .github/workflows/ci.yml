@@ -23,6 +23,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          # Resolve to the newest patch release: the cached manifest lagged a
+          # security release and govulncheck failed on a fixed stdlib.
+          check-latest: true
           cache: true
 
       - name: Verify go.mod is tidy
@@ -48,6 +51,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
 
       - uses: golangci/golangci-lint-action@v9
@@ -66,6 +70,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
 
       - name: govulncheck
