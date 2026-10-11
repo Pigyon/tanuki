@@ -7,13 +7,9 @@ import (
 	"os"
 )
 
-// Hook event names. Claude Code silently ignores the payload if hookEventName
-// does not match exactly, so these are constants, not inline strings.
-const (
-	eventPreToolUse       = "PreToolUse"
-	eventPostToolUse      = "PostToolUse"
-	eventUserPromptSubmit = "UserPromptSubmit"
-)
+// eventPreToolUse is the hook event name. Claude Code silently ignores the
+// payload if hookEventName does not match exactly, so it is a constant.
+const eventPreToolUse = "PreToolUse"
 
 var isHookDryRun bool
 
@@ -51,7 +47,7 @@ func cmdHook(args []string) {
 	}()
 
 	if len(args) == 0 {
-		fatal("Usage: tanuki hook [--dry-run] <pre-tool-use|post-tool-use|user-prompt-submit>")
+		fatal("Usage: tanuki hook [--dry-run] pre-tool-use")
 	}
 
 	var filtered []string
@@ -65,16 +61,16 @@ func cmdHook(args []string) {
 	}
 
 	if len(filtered) == 0 {
-		fatal("Usage: tanuki hook [--dry-run] <pre-tool-use|post-tool-use|user-prompt-submit>")
+		fatal("Usage: tanuki hook [--dry-run] pre-tool-use")
 	}
 
 	switch filtered[0] {
 	case "pre-tool-use":
 		hookPreToolUse()
-	case "post-tool-use":
-		hookPostToolUse()
-	case "user-prompt-submit":
-		hookUserPromptSubmit()
+	case "post-tool-use", "user-prompt-submit":
+		// Installed by older versions; the proxy now does their work. Answer
+		// until the proxy's next start rewrites settings.json without them.
+		emitNoop()
 	default:
 		fatal("Unknown hook: " + filtered[0])
 	}
@@ -174,82 +170,4 @@ func hookPreToolUse() {
 	// permissionDecision is omitted so rewriting the args does not also approve
 	// the call and remove the operator's permission prompt.
 	emitHookOutput(eventPreToolUse, map[string]any{"updatedInput": toolInput})
-}
-
-// autoMapTargets maps the new targets in text and reports how many it found.
-// A failure is logged rather than returned: a hook must not block the tool,
-// and the proxy maps and re-checks every body itself before forwarding it.
-func autoMapTargets(engDir, text string) (domains, ips int) {
-	domains, ips, err := mapTargets(engDir, text, isHookDryRun)
-	if err != nil {
-		logger.Error("auto-mapping failed", "error", err)
-	}
-
-	return domains, ips
-}
-
-func hookPostToolUse() {
-	eng, data, ok := readHookInput()
-	if !ok {
-		return
-	}
-
-	toolOutput, _ := data["tool_output"].(string)
-	if toolOutput == "" {
-		emitNoop()
-		return
-	}
-
-	engDir := engagementDir(eng)
-
-	autoMapTargets(engDir, toolOutput)
-
-	mappings := loadMappings(engDir)
-	if len(mappings) == 0 {
-		emitNoop()
-		return
-	}
-
-	rewritten := newRewriter(mappings, directionR2F).rewrite(toolOutput)
-	if rewritten == toolOutput {
-		emitNoop()
-		return
-	}
-
-	if isHookDryRun {
-		logger.Info("dry-run: would rewrite tool output", "delta_chars", len(rewritten)-len(toolOutput))
-	}
-
-	emitHookOutput(eventPostToolUse, map[string]any{"updatedToolOutput": rewritten})
-}
-
-func hookUserPromptSubmit() {
-	eng, data, ok := readHookInput()
-	if !ok {
-		return
-	}
-
-	// Claude Code sends the prompt as "prompt"; "prompt_text" is a fallback.
-	promptText, _ := data["prompt"].(string)
-	if promptText == "" {
-		promptText, _ = data["prompt_text"].(string)
-	}
-
-	if promptText == "" {
-		emitNoop()
-		return
-	}
-
-	domains, ips := autoMapTargets(engagementDir(eng), promptText)
-	if domains == 0 && ips == 0 {
-		emitNoop()
-		return
-	}
-
-	emitHookOutput(eventUserPromptSubmit, map[string]any{
-		"additionalContext": fmt.Sprintf(
-			"[tanuki] Auto-mapped %d new domain(s) and %d new IP(s)",
-			domains, ips,
-		),
-	})
 }

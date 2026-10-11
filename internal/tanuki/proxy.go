@@ -457,7 +457,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 // driven by a client other than Claude Code. Every byte bound for the API
 // passes through here, so this is the one place that covers all of them.
 func mapBodyTargets(engDir, body string) error {
-	domains, ips, err := mapTargets(engDir, body, false)
+	domains, ips, err := mapTargets(engDir, body)
 	if err != nil {
 		return fmt.Errorf("cannot map new targets: %w", err)
 	}

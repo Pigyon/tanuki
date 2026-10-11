@@ -454,31 +454,18 @@ func configureHooks() error {
 		return entry
 	}
 
-	tanukiHooks := map[string][]any{
-		"PreToolUse":       {mkEntry("Bash|Edit|Write|WebFetch|Grep|Glob|Read", "pre-tool-use")},
-		"PostToolUse":      {mkEntry("", "post-tool-use")},
-		"UserPromptSubmit": {mkEntry("", "user-prompt-submit")},
-	}
+	// Only PreToolUse: the proxy maps and rewrites every outbound body itself,
+	// so prompt and tool-output hooks only added a docker exec per event.
+	// Stripping first also removes the ones older versions installed.
+	stripTanukiHooks(settings)
 
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = make(map[string]any)
 	}
 
-	for hookType, tanukiEntries := range tanukiHooks {
-		var filtered []any
-
-		if existing, ok := hooks[hookType].([]any); ok {
-			for _, e := range existing {
-				if !isTanukiHookEntry(e) {
-					filtered = append(filtered, e)
-				}
-			}
-		}
-
-		filtered = append(filtered, tanukiEntries...)
-		hooks[hookType] = filtered
-	}
+	existing, _ := hooks["PreToolUse"].([]any)
+	hooks["PreToolUse"] = append(existing, mkEntry("Bash|Edit|Write|WebFetch|Grep|Glob|Read", "pre-tool-use"))
 
 	settings["hooks"] = hooks
 

@@ -1,10 +1,12 @@
 package tanuki
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -209,5 +211,60 @@ func TestMappingExistsMatchesWholeFields(t *testing.T) {
 
 	if !mappingExists(engDir, "domain", "amazon.com") {
 		t.Error("mapped domain reported as missing")
+	}
+}
+
+// TestConfigureHooksInstallsOnlyPreToolUse: the proxy covers what the prompt
+// and tool-output hooks did, and an upgrade must remove the ones an older
+// version installed while keeping the operator's own.
+//
+//nolint:paralleltest // t.Chdir forbids t.Parallel.
+func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := `{"hooks":{
+		"PostToolUse":[{"hooks":[{"type":"command","command":"docker exec -i tanuki /tanuki hook post-tool-use"}]},
+		               {"hooks":[{"type":"command","command":"my-own-linter"}]}],
+		"UserPromptSubmit":[{"hooks":[{"type":"command","command":"docker exec -i tanuki /tanuki hook user-prompt-submit"}]}]}}`
+	if err := os.WriteFile(filepath.Join(".claude", "settings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureHooks(); err != nil {
+		t.Fatalf("configureHooks: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var settings struct {
+		Hooks map[string][]any `json:"hooks"`
+	}
+
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := settings.Hooks["UserPromptSubmit"]; ok {
+		t.Error("legacy UserPromptSubmit hook was kept")
+	}
+
+	if postHooks := settings.Hooks["PostToolUse"]; len(postHooks) != 1 || !strings.Contains(string(raw), "my-own-linter") {
+		t.Errorf("PostToolUse = %v, want only the operator's own hook", postHooks)
+	}
+
+	if pre := settings.Hooks["PreToolUse"]; len(pre) != 1 {
+		t.Errorf("PreToolUse = %v, want the tanuki hook once", pre)
+	}
+
+	leftovers, _ := filepath.Glob(filepath.Join(".claude", ".*.tmp"))
+	if len(leftovers) > 0 {
+		t.Errorf("atomic write left temp files: %v", leftovers)
 	}
 }
