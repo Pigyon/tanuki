@@ -391,11 +391,31 @@ func mappingKeys(engDir string) map[string]bool {
 	return keys
 }
 
+// lockAllocation serialises allocation in engDir. Checking that a value has no
+// mapping and appending one must be a single step: run apart, concurrent
+// requests naming the same new target each gave it a different fiction.
+func lockAllocation(engDir string) func() {
+	return acquireFileLock(filepath.Join(engDir, "allocate"))
+}
+
 // mappingExists compares whole fields. A plain substring search also matched
 // mapping *content*, so a custom rule whose fiction text happened to contain
 // "domain|evil.com|" made that domain look mapped and it never got one.
 func mappingExists(engDir, typ, realVal string) bool {
 	return mappingKeys(engDir)[typ+"|"+realVal]
+}
+
+// addCustomRule adds a real|fiction rule unless one exists for realVal, and
+// reports whether it did.
+func addCustomRule(engDir, realVal, fiction string) (bool, error) {
+	unlock := lockAllocation(engDir)
+	defer unlock()
+
+	if mappingExists(engDir, "custom", realVal) {
+		return false, nil
+	}
+
+	return true, addMapping(engDir, "custom", realVal, fiction)
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
@@ -664,6 +684,9 @@ func addDomain(engDir, domain, fictionOrg string) error {
 	baseDomain := extractBaseDomain(domain)
 	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
+	unlock := lockAllocation(engDir)
+	defer unlock()
+
 	// One snapshot for all three checks: nothing is appended until the end.
 	existing := mappingKeys(engDir)
 
@@ -720,6 +743,9 @@ func addIPMapping(engDir, ip string) error {
 	if isPrivateIP(ip) {
 		return nil
 	}
+
+	unlock := lockAllocation(engDir)
+	defer unlock()
 
 	if mappingExists(engDir, "ip", ip) {
 		return nil

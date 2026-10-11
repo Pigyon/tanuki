@@ -82,15 +82,14 @@ func seedEnvRules(engDir, rules string) error {
 			continue
 		}
 
-		if mappingExists(engDir, "custom", parts[0]) {
-			continue
-		}
-
-		if err := addMapping(engDir, "custom", parts[0], parts[1]); err != nil {
+		added, err := addCustomRule(engDir, parts[0], parts[1])
+		if err != nil {
 			return err
 		}
 
-		logger.Info("pre-seeded rule from env", "real", parts[0], "fiction", parts[1])
+		if added {
+			logger.Info("pre-seeded rule from env", "real", parts[0], "fiction", parts[1])
+		}
 	}
 
 	return nil
@@ -200,16 +199,16 @@ func cmdAddRule(args []string) {
 		fatal(err.Error())
 	}
 
-	engDir := engagementDir(eng)
 	realVal, fiction := args[0], args[1]
 
-	if mappingExists(engDir, "custom", realVal) {
-		fmt.Printf("[tanuki] Rule already exists for %q\n", realVal)
-		return
+	added, err := addCustomRule(engagementDir(eng), realVal, fiction)
+	if err != nil {
+		fatal(err.Error())
 	}
 
-	if err := addMapping(engDir, "custom", realVal, fiction); err != nil {
-		fatal(err.Error())
+	if !added {
+		fmt.Printf("[tanuki] Rule already exists for %q\n", realVal)
+		return
 	}
 
 	fmt.Printf("[tanuki] Added rule: %q -> %q\n", realVal, fiction)

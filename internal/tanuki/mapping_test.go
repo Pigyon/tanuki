@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -799,6 +800,38 @@ func TestMappedHostStillRewritesAtDelimiters(t *testing.T) {
 	} {
 		if got := r2f.rewrite(text); strings.Contains(strings.ToLower(got), testBaseDomain) {
 			t.Errorf("rewrite(%q) = %q: mapped host was not rewritten", text, got)
+		}
+	}
+}
+
+// TestConcurrentMappingAllocatesOnce: the check for an existing mapping and the
+// append used to run apart, so parallel requests naming one new target each
+// gave it its own fiction (16 requests, 16 ports for one domain).
+//
+//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
+func TestConcurrentMappingAllocatesOnce(t *testing.T) {
+	engDir := setupEngagement(t)
+
+	var wg sync.WaitGroup
+
+	for range 16 {
+		wg.Go(func() {
+			if _, _, err := mapTargets(engDir, "scan target-corp.com and 52.94.236.248", false); err != nil {
+				t.Errorf("mapTargets: %v", err)
+			}
+		})
+	}
+
+	wg.Wait()
+
+	counts := map[string]int{}
+	for _, m := range loadMappings(engDir) {
+		counts[m.Type+"|"+m.Real]++
+	}
+
+	for _, key := range []string{"domain|target-corp.com", "org|target-corp", "wildcard|*.target-corp.com", "ip|52.94.236.248"} {
+		if counts[key] != 1 {
+			t.Errorf("%s mapped %d times, want once", key, counts[key])
 		}
 	}
 }
