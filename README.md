@@ -260,6 +260,8 @@ Set in `compose.yaml`:
 
 **Matching:** an Aho-Corasick automaton does longest-first replacement in a single pass over the stream.
 
+**JSON-aware:** request and response bodies are rewritten string by string, never as raw text. Protocol fields (`model`, `role`, `type`, ids, tool names) are left alone, base64 data is neither rewritten nor scanned, and thinking blocks go back to the API exactly as the model wrote them, since they are signed.
+
 ## Known limitations
 
 - **No HTTPS on the proxy.** The proxy listens on plain HTTP. That's acceptable because it only accepts connections from localhost (Claude Code on the same machine); the upstream connection to the Anthropic API uses HTTPS.
@@ -268,6 +270,7 @@ Set in `compose.yaml`:
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
 - **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~70 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. TLDs that collide with everyday code (`.info`, `.name`, `.app`, `.store`, `.top`, `.site`, as in `logger.info` or `user.name`) are left out. Domains on those or other unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
+- **Thinking stays in fiction.** Thinking blocks are signed by the API, so they are passed through unchanged in both directions. Thinking shown in Claude Code reads in fiction terms.
 - **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
 
 ## Verifying an engagement
