@@ -8,6 +8,6 @@ services:
   tanuki:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     image: tanuki:dev
     pull_policy: never

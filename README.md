@@ -13,7 +13,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/Pigyon/tanuki/ci.yml?branch=master&label=CI&color=233246&logo=githubactions&logoColor=2088FF)](https://github.com/Pigyon/tanuki/actions/workflows/ci.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-pigyon%2Ftanuki-233246?logo=github)](https://github.com/Pigyon/tanuki/pkgs/container/tanuki)
 
-[![Go](https://img.shields.io/badge/Go-1.25-233246?logo=go&logoColor=00ADD8)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26-233246?logo=go&logoColor=00ADD8)](https://go.dev)
 [![Docker](https://img.shields.io/badge/Docker-required-233246?logo=docker&logoColor=2496ED)](https://www.docker.com/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-integrated-233246?logo=anthropic&logoColor=D97757)](#quick-start)
 [![Image](https://img.shields.io/badge/image-scratch_~10MB-2E7B7E)](#architecture)
