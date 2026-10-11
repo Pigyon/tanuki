@@ -23,10 +23,6 @@ func TestMain(m *testing.M) {
 func setupEngagement(t *testing.T, domains ...string) string {
 	t.Helper()
 
-	// The active-engagement fallback is process-global; clear it so a prior
-	// test cannot leak an engagement into a "no engagement" case.
-	lastKnownEngagement.Store("")
-
 	dataRoot := t.TempDir()
 	t.Setenv("TANUKI_DATA", dataRoot)
 
@@ -127,7 +123,6 @@ func TestProxyRewritesRequestToFiction(t *testing.T) {
 // This test calls t.Setenv directly, which paralleltest recognizes, so it
 // needs no suppression (unlike the tests that reach t.Setenv via a helper).
 func TestProxyFailsClosedWithoutEngagement(t *testing.T) {
-	lastKnownEngagement.Store("")
 	t.Setenv("TANUKI_DATA", t.TempDir()) // no current_engagement, no mappings
 
 	hit := make(chan struct{}, 1)

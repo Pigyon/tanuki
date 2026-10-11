@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 )
 
 // exitUsage is for bad invocation; exitError for runtime failures. Hooks never
@@ -15,8 +14,6 @@ const (
 	exitError = 1
 	exitUsage = 2
 )
-
-var lastKnownEngagement atomic.Value
 
 // commands maps each command name to its handler, which receives the args
 // following the command name.
@@ -166,24 +163,15 @@ func dataDir() string   { return envOr("TANUKI_DATA", "data") }
 func proxyPort() string { return envOr("TANUKI_PROXY_PORT", "18080") }
 func portStart() string { return envOr("TANUKI_PORT_START", "9000") }
 
-// currentEngagement reads the active engagement, falling back to lastKnown on an
-// empty/missing read. It validates the (user-writable) name and never fatals.
+// currentEngagement reads the active engagement, or "" if there is none. It
+// validates the (user-writable) name and never fatals.
 func currentEngagement() string {
-	data, err := os.ReadFile(filepath.Join(dataDir(), "current_engagement"))
-	if err == nil {
-		if eng := strings.TrimSpace(string(data)); eng != "" && validateEngagementName(eng) == nil {
-			lastKnownEngagement.Store(eng)
-			return eng
-		}
+	eng := readFileContent(filepath.Join(dataDir(), "current_engagement"))
+	if validateEngagementName(eng) != nil {
+		return ""
 	}
 
-	if v := lastKnownEngagement.Load(); v != nil {
-		if eng, ok := v.(string); ok {
-			return eng
-		}
-	}
-
-	return ""
+	return eng
 }
 
 var errNoEngagement = errors.New("no active engagement, run: tanuki init <name>")
@@ -272,24 +260,40 @@ func readFileContent(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// writeFileContent writes /data engagement state 0600: it holds the mapping
-// table, read only by tanuki, so it must not be world-readable.
-func writeFileContent(path, content string) error {
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+// writeAtomic replaces path in one step, through a temporary file renamed
+// over it, so a concurrent reader never sees it empty or half written.
+func writeAtomic(path, content string, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	_, err = tmp.WriteString(content)
+
+	err = errors.Join(err, tmp.Chmod(perm), tmp.Close())
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 
 	return nil
 }
 
+// writeFileContent writes /data engagement state 0600: it holds the mapping
+// table, read only by tanuki, so it must not be world-readable.
+func writeFileContent(path, content string) error {
+	return writeAtomic(path, content, 0o600)
+}
+
 // writeSharedFile writes host-readable .claude/ config (0644). The container
 // writes as root over a bind mount, so 0600 would hide it on native-Linux Docker.
 func writeSharedFile(path, content string) error {
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-
-	return nil
+	return writeAtomic(path, content, 0o644)
 }
 
 func appendToFile(path, line string) error {
