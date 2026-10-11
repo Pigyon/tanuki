@@ -290,10 +290,31 @@ func writeFileContent(path, content string) error {
 	return writeAtomic(path, content, 0o600)
 }
 
-// writeSharedFile writes host-readable .claude/ config (0644). The container
+// writeSharedFile writes host-readable .claude/ config (0644) and hands it to
+// the host user, so they and Claude Code can still edit it. The container
 // writes as root over a bind mount, so 0600 would hide it on native-Linux Docker.
 func writeSharedFile(path, content string) error {
-	return writeAtomic(path, content, 0o644)
+	if err := writeAtomic(path, content, 0o644); err != nil {
+		return err
+	}
+
+	giveToHostUser(path)
+
+	return nil
+}
+
+// giveToHostUser chowns .claude or a file in it to the host user (see
+// hostOwner). It only logs on failure: the file is written, the operator may
+// just need sudo to edit it.
+func giveToHostUser(path string) {
+	uid, gid, ok := hostOwner(".claude")
+	if !ok {
+		return
+	}
+
+	if err := os.Lchown(path, uid, gid); err != nil {
+		logger.Warn("could not hand file to host user", "path", path, "uid", uid, "error", err)
+	}
 }
 
 func appendToFile(path, line string) error {
