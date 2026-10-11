@@ -22,6 +22,9 @@ const (
 	directionF2R = "f2r"
 )
 
+// defaultFictionOrg is the fiction org name when none is configured.
+const defaultFictionOrg = "DEVTARGET"
+
 // maxPort is the highest port a fiction localhost mapping can use. Running
 // past it means a real value would have no fiction counterpart.
 const maxPort = 65535
@@ -381,20 +384,8 @@ func (rw *rewriter) wildcardFiction(host string) (string, bool) {
 func mappingKeys(engDir string) map[string]bool {
 	keys := map[string]bool{}
 
-	data, err := os.ReadFile(filepath.Join(engDir, "mappings.conf"))
-	if err != nil {
-		return keys
-	}
-
-	for line := range strings.Lines(string(data)) {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		if parts := strings.SplitN(line, "|", 3); len(parts) == 3 {
-			keys[parts[0]+"|"+parts[1]] = true
-		}
+	for _, m := range loadMappings(engDir) {
+		keys[m.Type+"|"+m.Real] = true
 	}
 
 	return keys
@@ -657,7 +648,7 @@ func resolveFictionOrg(engDir, fictionOrg string) string {
 		return stored
 	}
 
-	return "DEVTARGET"
+	return defaultFictionOrg
 }
 
 func addDomain(engDir, domain, fictionOrg string) error {

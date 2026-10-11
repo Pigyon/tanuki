@@ -127,7 +127,7 @@ func cmdInit(args []string) {
 	}
 
 	if fictionOrg == "" {
-		fictionOrg = "DEVTARGET"
+		fictionOrg = defaultFictionOrg
 	}
 
 	engDir := engagementDir(name)
@@ -135,30 +135,7 @@ func cmdInit(args []string) {
 		fatal(fmt.Sprintf("engagement %q already exists, use: tanuki activate %s", name, name))
 	}
 
-	if err := os.MkdirAll(engDir, 0o750); err != nil {
-		fatal(fmt.Sprintf("creating directory %s: %v", engDir, err))
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "fiction_org"), fictionOrg); err != nil {
-		fatal(err.Error())
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "port_counter"), portStart()); err != nil {
-		fatal(err.Error())
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), "2"); err != nil {
-		fatal(err.Error())
-	}
-
-	if err := writeFileContent(filepath.Join(engDir, "org_counter"), "1"); err != nil {
-		fatal(err.Error())
-	}
-
-	if err := writeFileContent(
-		filepath.Join(engDir, "mappings.conf"),
-		"# Tanuki engagement mappings\n# Format: TYPE|REAL_VALUE|FICTION_VALUE\n",
-	); err != nil {
+	if err := seedEngagement(engDir, fictionOrg); err != nil {
 		fatal(err.Error())
 	}
 
@@ -656,7 +633,7 @@ func cmdImport(args []string) {
 
 	fictionOrg := imported.FictionOrg
 	if fictionOrg == "" {
-		fictionOrg = "DEVTARGET"
+		fictionOrg = defaultFictionOrg
 	}
 
 	if err := seedEngagement(engDir, fictionOrg); err != nil {
