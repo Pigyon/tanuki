@@ -177,3 +177,46 @@ func TestProxyStillRefusesWithNothingMapped(t *testing.T) {
 		t.Error("forwarded a body with no mappings configured")
 	}
 }
+
+// TestAnonymizeIgnoresProviderDomains: Claude Code's system prompt names the
+// provider's own domains on every request. Mapping them made "claude" an org,
+// which rewrote the model name.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestAnonymizeIgnoresProviderDomains(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+
+	out, err := anonymizeUpstreamBody([]byte(`{"model":"claude-opus-5-5",` +
+		`"system":"You are Claude Code. Docs: https://docs.claude.com/en/docs and https://www.anthropic.com",` +
+		`"messages":[{"role":"user","content":"scan amazon.com"}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	for _, want := range []string{`"model":"claude-opus-5-5"`, "You are Claude Code", "docs.claude.com"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("%q was rewritten: %s", want, out)
+		}
+	}
+
+	for _, d := range []string{"claude.com", "anthropic.com"} {
+		if mappingExists(engDir, "domain", d) {
+			t.Errorf("%s was mapped as a target", d)
+		}
+	}
+}
+
+// TestIgnoreListFromEnv: TANUKI_IGNORE keeps an operator-named domain, and its
+// subdomains, out of auto-detection and out of the residual check.
+func TestIgnoreListFromEnv(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+	t.Setenv("TANUKI_IGNORE", "example-cdn.net, other.org")
+
+	if _, err := anonymizeUpstreamBody([]byte(`{"content":"assets on static.example-cdn.net"}`)); err != nil {
+		t.Fatalf("ignored domain was refused: %v", err)
+	}
+
+	if mappingExists(engDir, "domain", "example-cdn.net") {
+		t.Error("ignored domain was mapped")
+	}
+}

@@ -863,3 +863,21 @@ func TestHyphenatedNamesRoundTrip(t *testing.T) {
 		t.Errorf("round trip changed the text:\n got %q\nwant %q", back, in)
 	}
 }
+
+// TestDetectionSkipsCodeIdentifiers: attribute access in code looked like a
+// domain on a common TLD, so "logger.info" or "user.name" became targets and
+// their first label an org ("user" then rewrote every "user" in the request).
+//
+//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
+func TestDetectionSkipsCodeIdentifiers(t *testing.T) {
+	engDir := setupEngagement(t)
+
+	code := "logger.info('x'); git config user.name; this.store = s; req.app.use(); window.top; self.site"
+	if found := findNewDomains(code, engDir); len(found) > 0 {
+		t.Errorf("code identifiers detected as domains: %v", found)
+	}
+
+	if found := findNewDomains("contact admin@acme-corp.com", engDir); len(found) != 1 {
+		t.Errorf("real domain not detected: %v", found)
+	}
+}
