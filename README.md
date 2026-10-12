@@ -271,7 +271,7 @@ Set in `compose.yaml`:
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
 - **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~70 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. TLDs that collide with everyday code (`.info`, `.name`, `.app`, `.store`, `.top`, `.site`, as in `logger.info` or `user.name`) are left out. Domains on those or other unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
 - **Thinking stays in fiction.** Thinking blocks are signed by the API, so they are passed through unchanged in both directions. Thinking shown in Claude Code reads in fiction terms.
-- **Streamed responses are reversed per event.** In the response direction, a fiction value whose characters are token-streamed across _separate_ SSE events is not rejoined, so it may reach the client un-reversed. This is never an upstream leak (it is the response), it is at worst cosmetic in display text, and any fiction value inside a tool call is independently reversed by the `PreToolUse` hook before the tool runs.
+- **Streamed text is held back briefly.** A fiction value can be streamed a few characters per event, so the proxy holds back the end of a text or tool-input block while it could still be the start of one, and sends it once the next event settles it. Display can lag by a few characters; the full value always arrives reversed.
 
 ## Verifying an engagement
 

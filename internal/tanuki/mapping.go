@@ -59,6 +59,10 @@ type rewriter struct {
 	// explicit holds every real value that has its own mapping, so the
 	// wildcard pass leaves them for the exact-match pass to handle.
 	explicit map[string]bool
+	// heads holds every prefix of every fiction value, lowercased (f2r only),
+	// so a stream can tell whether its tail may be the start of one.
+	heads   map[string]bool
+	maxHead int
 }
 
 //go:embed terminology.json
@@ -276,9 +280,48 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 
 	if direction == directionR2F {
 		rw.terms = termRewriter
+	} else {
+		rw.heads, rw.maxHead = fictionHeads(mappings)
 	}
 
 	return rw
+}
+
+// fictionHeads returns every prefix of every reversible fiction value,
+// lowercased, and the longest value's length. Wildcard fictions are left out:
+// they are never reversed.
+func fictionHeads(mappings []mappingEntry) (map[string]bool, int) {
+	heads := map[string]bool{}
+	longest := 0
+
+	for _, m := range mappings {
+		if m.Type == "wildcard" {
+			continue
+		}
+
+		fiction := strings.ToLower(m.Fiction)
+		for i := 1; i <= len(fiction); i++ {
+			heads[fiction[:i]] = true
+		}
+
+		longest = max(longest, len(fiction))
+	}
+
+	return heads, longest
+}
+
+// splitHeld splits streamed text into what can be sent now and the tail to
+// hold back: the longest suffix that is the start of a fiction value, or a
+// whole one, since the next delta may complete it or run on into a different
+// name.
+func (rw *rewriter) splitHeld(text string) (send, hold string) {
+	for k := min(len(text), rw.maxHead); k > 0; k-- {
+		if rw.heads[strings.ToLower(text[len(text)-k:])] {
+			return text[:len(text)-k], text[len(text)-k:]
+		}
+	}
+
+	return text, ""
 }
 
 // isHostMapping reports whether a mapping's values are hostnames, and so must

@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -248,32 +250,148 @@ func copyProxyHeaders(dst, src http.Header, dropContentLength bool) {
 
 // sseSink is the destination for rewritten SSE events. A nil flusher means
 // the underlying ResponseWriter does not support flushing.
+//
+// Text and tool-input deltas are reversed across events, not one at a time:
+// the model streams a few characters per delta, so "localhost:9000" can arrive
+// as "local", "host:90", "00". The tail of a block that could be the start of a
+// fiction value is held back until the next delta shows whether it is one, and
+// released when the block or the stream ends.
 type sseSink struct {
 	w       io.Writer
 	flusher http.Flusher
 	rw      *rewriter
+	held    map[string]*heldDelta // by content block index
 }
 
-func newSSESink(w http.ResponseWriter, rw *rewriter) sseSink {
+// heldDelta is the unsent tail of one content block.
+type heldDelta struct {
+	index any    // the block index, sent back as it arrived
+	kind  string // the delta type: a key of deltaFields
+	text  string
+}
+
+// deltaFields maps each delta type that carries reversible text to its field.
+var deltaFields = map[string]string{
+	"text_delta":       "text",
+	"input_json_delta": "partial_json",
+}
+
+func newSSESink(w http.ResponseWriter, rw *rewriter) *sseSink {
 	flusher, _ := w.(http.Flusher)
 
-	return sseSink{w: w, flusher: flusher, rw: rw}
+	return &sseSink{w: w, flusher: flusher, rw: rw, held: map[string]*heldDelta{}}
 }
 
-// write rewrites text and sends it downstream, flushing so the client sees
-// each event as it arrives rather than at end of stream.
-func (s sseSink) write(text string) {
-	text = reverseSSEEvent(text, s.rw)
+// write handles one complete event.
+func (s *sseSink) write(event string) {
+	if doc := s.eventData(event); doc != nil {
+		switch doc[typeKey] {
+		case "content_block_delta":
+			if s.holdDelta(doc) {
+				return
+			}
+		case "content_block_stop":
+			s.release(fmt.Sprint(doc["index"]))
+		}
+	}
 
-	_, _ = io.WriteString(s.w, text)
+	s.send(reverseSSEEvent(event, s.rw))
+}
+
+// eventData decodes the JSON payload of an event's "data:" line, or returns
+// nil when there is nothing to reverse or no JSON object to read.
+func (s *sseSink) eventData(event string) map[string]any {
+	if s.rw == nil {
+		return nil
+	}
+
+	for line := range strings.Lines(event) {
+		payload, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data:")
+		if !ok {
+			continue
+		}
+
+		doc, _ := decodeJSON([]byte(strings.TrimPrefix(payload, " ")))
+		obj, _ := doc.(map[string]any)
+
+		return obj
+	}
+
+	return nil
+}
+
+// holdDelta sends the part of a text delta that is settled, keeps the tail
+// that may still turn into a fiction value, and reports whether the event was
+// a text delta at all.
+func (s *sseSink) holdDelta(doc map[string]any) bool {
+	delta, _ := doc["delta"].(map[string]any)
+	kind, _ := delta[typeKey].(string)
+	field, isText := deltaFields[kind]
+	text, isString := delta[field].(string)
+
+	if !isText || !isString {
+		return false
+	}
+
+	key := fmt.Sprint(doc["index"])
+
+	h := s.held[key]
+	if h == nil {
+		h = &heldDelta{index: doc["index"], kind: kind}
+		s.held[key] = h
+	}
+
+	send, hold := s.rw.splitHeld(h.text + text)
+	h.text = hold
+
+	if send != "" {
+		s.sendDelta(h, send)
+	}
+
+	return true
+}
+
+// release sends what is held for a block, before the event that ends it.
+func (s *sseSink) release(key string) {
+	h := s.held[key]
+	delete(s.held, key)
+
+	if h != nil && h.text != "" {
+		s.sendDelta(h, h.text)
+	}
+}
+
+// releaseAll sends whatever a stream that ended early left held.
+func (s *sseSink) releaseAll() {
+	for _, key := range slices.Sorted(maps.Keys(s.held)) {
+		s.release(key)
+	}
+}
+
+func (s *sseSink) sendDelta(h *heldDelta, text string) {
+	data, err := encodeJSON(map[string]any{
+		typeKey: "content_block_delta",
+		"index": h.index,
+		"delta": map[string]any{typeKey: h.kind, deltaFields[h.kind]: s.rw.rewrite(text)},
+	})
+	if err != nil {
+		return
+	}
+
+	s.send("event: content_block_delta\ndata: " + string(data) + "\n\n")
+}
+
+// send writes an event downstream, flushing so the client sees each event as
+// it arrives rather than at end of stream.
+func (s *sseSink) send(event string) {
+	_, _ = io.WriteString(s.w, event)
 
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
 }
 
-// streamSSEWithRewrite reverses fiction to real one SSE event at a time. A value
-// split across separate events is not rejoined (response direction, not a leak).
+// streamSSEWithRewrite reverses fiction to real in a stream of SSE events.
 func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 	sink := newSSESink(w, rw)
 
@@ -296,6 +414,7 @@ func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 
 		if readErr != nil {
 			flushRemainder(&lineBuf, sink)
+			sink.releaseAll()
 
 			break
 		}
@@ -304,7 +423,7 @@ func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
 
 // flushRemainder writes whatever is left in buf after the stream ends, so a
 // partial trailing event still gets rewritten rather than dropped.
-func flushRemainder(buf *bytes.Buffer, sink sseSink) {
+func flushRemainder(buf *bytes.Buffer, sink *sseSink) {
 	if buf.Len() == 0 {
 		return
 	}
@@ -328,7 +447,7 @@ func findEventBoundary(data []byte) (int, int) {
 
 // flushCompleteEvents drains every whole SSE event currently in buf,
 // leaving any trailing partial event for the next read.
-func flushCompleteEvents(buf *bytes.Buffer, sink sseSink) {
+func flushCompleteEvents(buf *bytes.Buffer, sink *sseSink) {
 	for {
 		data := buf.Bytes()
 

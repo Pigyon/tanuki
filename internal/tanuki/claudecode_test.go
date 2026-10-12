@@ -200,11 +200,62 @@ func TestClaudeCodeResponse(t *testing.T) {
 		t.Errorf("thinking or signature deltas changed:\n got %q\nwant %q", got.signed, sent.signed)
 	}
 
-	if want := "The login on acme-corp.com redirects to "; !strings.HasPrefix(got.blocks[1], want) {
-		t.Errorf("text block = %q, want it to start %q", got.blocks[1], want)
+	// Fiction values arrive split across deltas ("local", "host:90", "02")
+	// and must still be reversed once the client joins them.
+	wantText := "The login on acme-corp.com redirects to the acme-corp SSO at sso.acme-corp.com. Next I'll fetch it."
+	if got.blocks[1] != wantText {
+		t.Errorf("text block:\n got %q\nwant %q", got.blocks[1], wantText)
+	}
+
+	wantInput := `{"command": "curl -sI https://acme-corp.com/admin"}`
+	if got.blocks[2] != wantInput {
+		t.Errorf("tool input:\n got %q\nwant %q", got.blocks[2], wantInput)
 	}
 
 	if !strings.HasSuffix(rec.Body.String(), "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n") {
 		t.Error("stream did not end with message_stop")
+	}
+}
+
+// TestStreamReleasesHeldTextAtEnd: a stream cut off before its block ends
+// must still deliver the tail it was holding back, reversed.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestStreamReleasesHeldTextAtEnd(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+
+	delta := func(text string) string {
+		return `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + text + `"}}` + "\n\n"
+	}
+
+	rec := httptest.NewRecorder()
+	streamSSEWithRewrite(rec, strings.NewReader(delta("see local")+delta("host:9000")),
+		newRewriter(loadMappings(engDir), directionF2R))
+
+	if got := readSSE(t, rec.Body.String()).blocks[0]; got != "see "+testBaseDomain {
+		t.Errorf("text = %q, want %q", got, "see "+testBaseDomain)
+	}
+}
+
+// TestSplitHeldKeepsOnlyPossibleFiction: text is held back only while its tail
+// could still become a fiction value, so ordinary text streams through.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestSplitHeldKeepsOnlyPossibleFiction(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+	rw := newRewriter(loadMappings(engDir), directionF2R)
+
+	for _, tc := range []struct{ in, send, hold string }{
+		{"plain text, nothing to see!", "plain text, nothing to see!", ""},
+		// One letter that starts a fiction waits for the next delta too.
+		{"the end", "the en", "d"},
+		{"reached local", "reached ", "local"},
+		{"reached LOCALHOST:90", "reached ", "LOCALHOST:90"},
+		{"reached localhost:9000", "reached ", "localhost:9000"},
+		{"the DEVTARGET", "the ", "DEVTARGET"},
+	} {
+		if send, hold := rw.splitHeld(tc.in); send != tc.send || hold != tc.hold {
+			t.Errorf("splitHeld(%q) = %q, %q; want %q, %q", tc.in, send, hold, tc.send, tc.hold)
+		}
 	}
 }
