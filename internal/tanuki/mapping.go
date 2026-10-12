@@ -1013,7 +1013,7 @@ func scanTargets(text string) scanned {
 
 // findNewTargets returns the domains and public IPs in texts that have no
 // mapping yet, reading mappings.conf once for all of them.
-func findNewTargets(engDir string, texts []string) (domains, ips []string) {
+func findNewTargets(engDir string, texts []string, extraIgnored ...string) (domains, ips []string) {
 	existing := mappingKeys(engDir)
 	emitted := make(map[string]bool)
 	domains, ips = []string{}, []string{}
@@ -1022,7 +1022,7 @@ func findNewTargets(engDir string, texts []string) (domains, ips []string) {
 		foundDomains, foundIPs := targetsIn(text)
 
 		for _, domain := range foundDomains {
-			if isIgnoredDomain(domain) {
+			if isIgnoredDomain(domain, extraIgnored...) {
 				continue
 			}
 

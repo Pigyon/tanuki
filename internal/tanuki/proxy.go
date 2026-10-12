@@ -533,11 +533,20 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	doc, isJSON := decodeJSON(body)
 
 	texts := []string{string(body)}
+
+	// Ignores good for this request only: the operator's own email domain,
+	// read from the context Claude Code injects. Computed before the rewrite
+	// and reused by the residual gate so detection and the gate agree. Derived
+	// from the decoded doc so it can skip target-controlled tool_result blocks;
+	// a non-JSON body has no such structure and gets no per-request ignores.
+	var extraIgnored []string
+
 	if isJSON {
 		texts = jsonStrings(doc)
+		extraIgnored = operatorIgnoredDomains(doc)
 	}
 
-	if err := mapBodyTargets(engDir, texts); err != nil {
+	if err := mapBodyTargets(engDir, texts, extraIgnored); err != nil {
 		return nil, err
 	}
 
@@ -553,7 +562,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	if !isJSON {
 		out := rw.rewrite(string(body))
 
-		if err := checkResidual(out); err != nil {
+		if err := checkResidual(extraIgnored, out); err != nil {
 			return nil, err
 		}
 
@@ -562,7 +571,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 
 	doc = rewriteJSONStrings(doc, rw.rewrite)
 
-	if err := checkResidual(jsonStrings(doc)...); err != nil {
+	if err := checkResidual(extraIgnored, jsonStrings(doc)...); err != nil {
 		return nil, err
 	}
 
@@ -574,8 +583,8 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 // came from: the typed prompt, tool output, an @-mentioned file, a paste,
 // CLAUDE.md, a session resumed from elsewhere, or a client other than Claude
 // Code.
-func mapBodyTargets(engDir string, texts []string) error {
-	domains, ips, err := mapTargets(engDir, texts...)
+func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
+	domains, ips, err := mapTargets(engDir, extraIgnored, texts...)
 	if err != nil {
 		return fmt.Errorf("cannot map new targets: %w", err)
 	}
@@ -597,8 +606,8 @@ func mapBodyTargets(engDir string, texts []string) error {
 // The error names counts, never values. It is returned to the local client,
 // which may fold the text into its next prompt, so the values go to the log
 // the operator can read with "docker logs tanuki" instead.
-func checkResidual(texts ...string) error {
-	residual := residualTargets(texts...)
+func checkResidual(extraIgnored []string, texts ...string) error {
+	residual := residualTargets(extraIgnored, texts...)
 	if len(residual) == 0 {
 		return nil
 	}
