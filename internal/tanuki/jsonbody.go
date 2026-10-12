@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// typeKey is the field every API object names its kind with.
+const typeKey = "type"
+
 // structuralKeys hold protocol values, not prose. Rewriting them corrupts the
 // request: an org rule for "user" turned "role":"user" into "role":"DEVTARGET",
 // one for "claude" broke the model name, and rewriting the "$schema" URL every
@@ -25,7 +28,7 @@ var structuralKeys = map[string]bool{
 	"role":        true,
 	"stop_reason": true,
 	"tool_use_id": true,
-	"type":        true,
+	typeKey:       true,
 	"user_id":     true,
 }
 
@@ -43,7 +46,7 @@ var opaqueKeys = map[string]bool{
 // it cannot hold a domain or IP as text, so it is neither rewritten nor
 // scanned. Only a plain-text document source carries prose in "data".
 func isBinary(obj map[string]any, key string) bool {
-	return key == "data" && obj["type"] != "text"
+	return key == "data" && obj[typeKey] != "text"
 }
 
 // keepAsIs reports whether the string at obj[key] must pass through untouched.
