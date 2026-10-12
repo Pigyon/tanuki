@@ -2,6 +2,7 @@ package tanuki
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -23,12 +24,12 @@ var fixtureRealValues = []string{
 	"sso.acme-corp.com", "security@acme-corp.com", "52.94.236.248",
 }
 
-func readFixture(t *testing.T, name string) []byte {
-	t.Helper()
+func readFixture(tb testing.TB, name string) []byte {
+	tb.Helper()
 
 	data, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
-		t.Fatalf("reading fixture: %v", err)
+		tb.Fatalf("reading fixture: %v", err)
 	}
 
 	return data
@@ -256,6 +257,58 @@ func TestSplitHeldKeepsOnlyPossibleFiction(t *testing.T) {
 	} {
 		if send, hold := rw.splitHeld(tc.in); send != tc.send || hold != tc.hold {
 			t.Errorf("splitHeld(%q) = %q, %q; want %q, %q", tc.in, send, hold, tc.send, tc.hold)
+		}
+	}
+}
+
+// BenchmarkAnonymizeNextTurn measures a request whose history was already seen
+// in the previous one, which is every request after the first: Claude Code
+// resends the whole conversation each turn.
+func BenchmarkAnonymizeNextTurn(b *testing.B) {
+	b.Setenv("TANUKI_DATA", b.TempDir())
+	initLogger()
+	proxyCache.invalidate()
+
+	engDir := engagementDir("bench")
+	if err := seedEngagement(engDir, defaultFictionOrg); err != nil {
+		b.Fatal(err)
+	}
+
+	if err := writeFileContent(filepath.Join(dataDir(), "current_engagement"), "bench"); err != nil {
+		b.Fatal(err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(readFixture(b, "claude_code_request.json"), &req); err != nil {
+		b.Fatal(err)
+	}
+
+	// About 1 MB of tool output, the size of a long session's history.
+	output := strings.Repeat("GET /api/v2/orders?page=3 HTTP/1.1 200 OK from bounty.acme-corp.com in 12ms\n", 160)
+	messages, _ := req["messages"].([]any)
+
+	for i := range 80 {
+		messages = append(messages,
+			map[string]any{"role": "assistant", "content": fmt.Sprintf("Checked page %d.", i)},
+			map[string]any{"role": "user", "content": output + fmt.Sprintf("turn %d", i)})
+	}
+
+	req["messages"] = messages
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	if _, err := anonymizeUpstreamBody(body); err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(int64(len(body)))
+
+	for b.Loop() {
+		if _, err := anonymizeUpstreamBody(body); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

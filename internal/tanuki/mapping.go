@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,9 @@ type rewriter struct {
 	// so a stream can tell whether its tail may be the start of one.
 	heads   map[string]bool
 	maxHead int
+	// memo remembers rewrites of long strings. A rewriter is rebuilt whenever
+	// the mappings change, so a remembered result is never stale.
+	memo memoCache[string]
 }
 
 //go:embed terminology.json
@@ -345,6 +349,10 @@ func orgRule(m mappingEntry, direction string) termEntry {
 }
 
 func (rw *rewriter) rewrite(text string) string {
+	return rw.memo.get(text, rw.rewriteText)
+}
+
+func (rw *rewriter) rewriteText(text string) string {
 	// Wildcards first, or the exact-match pass rewrites the base domain inside
 	// an unmapped subdomain and leaks the label upstream.
 	text = rw.rewriteWildcards(text)
@@ -955,32 +963,6 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 	return b.String()
 }
 
-func findNewPublicIPs(text, engDir string) []string {
-	seen := make(map[string]bool)
-	existing := mappingKeys(engDir)
-	result := []string{}
-
-	candidates := ipv4Regex.FindAllString(text, -1)
-	candidates = append(candidates, ipv6Regex.FindAllString(text, -1)...)
-
-	for _, candidate := range candidates {
-		ip := longestValidIP(candidate)
-		if ip == "" || seen[ip] {
-			continue
-		}
-
-		seen[ip] = true
-
-		if isPrivateIP(ip) || existing["ip|"+ip] {
-			continue
-		}
-
-		result = append(result, ip)
-	}
-
-	return result
-}
-
 var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
 
 func hasCommonTLD(domain string) bool {
@@ -992,32 +974,82 @@ func hasCommonTLD(domain string) bool {
 	return commonTLDs[strings.ToLower(parts[len(parts)-1])]
 }
 
-func findNewDomains(text, engDir string) []string {
-	seen := make(map[string]bool)    // candidates already examined
-	emitted := make(map[string]bool) // values already in result
-	existing := mappingKeys(engDir)  // mappings already on disk
-	result := []string{}
+// scanned is what scanTargets found in one string.
+type scanned struct{ domains, ips []string }
+
+var targetScans memoCache[scanned]
+
+// targetsIn returns the distinct real-looking values in text: domains on a
+// common TLD, lowercased, and public IPs in canonical form. It depends on text
+// alone, so long strings are scanned once (see memoCache); callers apply the
+// ignore list, which can change, and must not modify the slices.
+func targetsIn(text string) (domains, ips []string) {
+	s := targetScans.get(text, scanTargets)
+
+	return s.domains, s.ips
+}
+
+func scanTargets(text string) scanned {
+	var s scanned
+
+	seen := make(map[string]bool)
 
 	for _, raw := range domainRegex.FindAllString(text, -1) {
-		domain := strings.ToLower(raw)
-		if !hasCommonTLD(domain) || seen[domain] || isIgnoredDomain(domain) {
-			continue
-		}
-
-		seen[domain] = true
-
-		// Base domain first so it gets the lower port and owns the derived
-		// org/email/path mappings; emitted dedupes the apex-only case.
-		for _, candidate := range []string{extractBaseDomain(domain), domain} {
-			if emitted[candidate] || existing["domain|"+candidate] {
-				continue
-			}
-
-			emitted[candidate] = true
-
-			result = append(result, candidate)
+		if domain := strings.ToLower(raw); hasCommonTLD(domain) && !seen[domain] {
+			seen[domain] = true
+			s.domains = append(s.domains, domain)
 		}
 	}
 
-	return result
+	for _, candidate := range slices.Concat(ipv4Regex.FindAllString(text, -1), ipv6Regex.FindAllString(text, -1)) {
+		if ip := longestValidIP(candidate); ip != "" && !isPrivateIP(ip) && !seen[ip] {
+			seen[ip] = true
+			s.ips = append(s.ips, ip)
+		}
+	}
+
+	return s
+}
+
+// findNewTargets returns the domains and public IPs in texts that have no
+// mapping yet, reading mappings.conf once for all of them.
+func findNewTargets(engDir string, texts []string) (domains, ips []string) {
+	existing := mappingKeys(engDir)
+	emitted := make(map[string]bool)
+	domains, ips = []string{}, []string{}
+
+	for _, text := range texts {
+		foundDomains, foundIPs := targetsIn(text)
+
+		for _, domain := range foundDomains {
+			if isIgnoredDomain(domain) {
+				continue
+			}
+
+			// Base domain first so it gets the lower port and owns the derived
+			// org/email/path mappings; emitted dedupes the apex-only case.
+			for _, candidate := range []string{extractBaseDomain(domain), domain} {
+				if !emitted[candidate] && !existing["domain|"+candidate] {
+					emitted[candidate] = true
+					domains = append(domains, candidate)
+				}
+			}
+		}
+
+		for _, ip := range foundIPs {
+			if !emitted[ip] && !existing["ip|"+ip] {
+				emitted[ip] = true
+				ips = append(ips, ip)
+			}
+		}
+	}
+
+	return domains, ips
+}
+
+// findNewDomains returns the domains in text that have no mapping yet.
+func findNewDomains(text, engDir string) []string {
+	domains, _ := findNewTargets(engDir, []string{text})
+
+	return domains
 }

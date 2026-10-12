@@ -49,12 +49,11 @@ func isIgnoredDomain(domain string) bool {
 	return false
 }
 
-// mapTargets gives every unmapped domain and public IP in text a fiction and
+// mapTargets gives every unmapped domain and public IP in texts a fiction and
 // reports how many of each it found. Both candidate lists are collected before
 // anything is written, so neither pass sees the other's mappings.
-func mapTargets(engDir, text string) (domains, ips int, err error) {
-	newDomains := findNewDomains(text, engDir)
-	newIPs := findNewPublicIPs(text, engDir)
+func mapTargets(engDir string, texts ...string) (domains, ips int, err error) {
+	newDomains, newIPs := findNewTargets(engDir, texts)
 
 	for _, domain := range newDomains {
 		if addErr := addDomain(engDir, domain, ""); addErr != nil {
@@ -80,33 +79,22 @@ func mapTargets(engDir, text string) (domains, ips int, err error) {
 // Fiction values are not recognised as targets -- "localhost:9000" has no dot,
 // "devtarget.local" has no common TLD and the loopback IPs are filtered as
 // private -- so tanuki's own output never trips it.
-func residualTargets(text string) []string {
+func residualTargets(texts ...string) []string {
 	seen := make(map[string]bool)
 	found := []string{}
 
-	for _, raw := range domainRegex.FindAllString(text, -1) {
-		domain := strings.ToLower(raw)
-		if !hasCommonTLD(domain) || seen[domain] || isIgnoredDomain(domain) {
-			continue
+	for _, text := range texts {
+		domains, ips := targetsIn(text)
+
+		for _, v := range slices.Concat(domains, ips) {
+			if seen[v] || isIgnoredDomain(v) {
+				continue
+			}
+
+			seen[v] = true
+
+			found = append(found, v)
 		}
-
-		seen[domain] = true
-
-		found = append(found, domain)
-	}
-
-	for _, candidate := range append(
-		ipv4Regex.FindAllString(text, -1),
-		ipv6Regex.FindAllString(text, -1)...,
-	) {
-		ip := longestValidIP(candidate)
-		if ip == "" || isPrivateIP(ip) || seen[ip] {
-			continue
-		}
-
-		seen[ip] = true
-
-		found = append(found, ip)
 	}
 
 	return found

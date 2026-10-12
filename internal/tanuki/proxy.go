@@ -532,12 +532,12 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 
 	doc, isJSON := decodeJSON(body)
 
-	text := string(body)
+	texts := []string{string(body)}
 	if isJSON {
-		text = jsonText(doc)
+		texts = jsonStrings(doc)
 	}
 
-	if err := mapBodyTargets(engDir, text); err != nil {
+	if err := mapBodyTargets(engDir, texts); err != nil {
 		return nil, err
 	}
 
@@ -551,7 +551,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	}
 
 	if !isJSON {
-		out := rw.rewrite(text)
+		out := rw.rewrite(string(body))
 
 		if err := checkResidual(out); err != nil {
 			return nil, err
@@ -562,21 +562,20 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 
 	doc = rewriteJSONStrings(doc, rw.rewrite)
 
-	if err := checkResidual(jsonText(doc)); err != nil {
+	if err := checkResidual(jsonStrings(doc)...); err != nil {
 		return nil, err
 	}
 
 	return encodeJSON(doc)
 }
 
-// mapBodyTargets maps anything in the body that has no fiction yet. The hooks
-// already do this for the prompt the operator types and for tool output, but
-// nothing sees an @-mentioned file, a pasted block, CLAUDE.md or a session
-// resumed from elsewhere, and nothing sees anything at all when the proxy is
-// driven by a client other than Claude Code. Every byte bound for the API
-// passes through here, so this is the one place that covers all of them.
-func mapBodyTargets(engDir, body string) error {
-	domains, ips, err := mapTargets(engDir, body)
+// mapBodyTargets maps anything in the body that has no fiction yet. Every byte
+// bound for the API passes through here, so this covers a target wherever it
+// came from: the typed prompt, tool output, an @-mentioned file, a paste,
+// CLAUDE.md, a session resumed from elsewhere, or a client other than Claude
+// Code.
+func mapBodyTargets(engDir string, texts []string) error {
+	domains, ips, err := mapTargets(engDir, texts...)
 	if err != nil {
 		return fmt.Errorf("cannot map new targets: %w", err)
 	}
@@ -598,8 +597,8 @@ func mapBodyTargets(engDir, body string) error {
 // The error names counts, never values. It is returned to the local client,
 // which may fold the text into its next prompt, so the values go to the log
 // the operator can read with "docker logs tanuki" instead.
-func checkResidual(body string) error {
-	residual := residualTargets(body)
+func checkResidual(texts ...string) error {
+	residual := residualTargets(texts...)
 	if len(residual) == 0 {
 		return nil
 	}
