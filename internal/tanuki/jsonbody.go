@@ -148,7 +148,8 @@ func encodeJSON(v any) ([]byte, error) {
 
 // reverseBody rewrites fiction back to real in a response body, leaving
 // protocol fields and signed thinking alone. A body that is not JSON is
-// rewritten as plain text.
+// rewritten as plain text. One with nothing to reverse, which is most stream
+// events, is returned as it arrived rather than re-encoded.
 func reverseBody(data string, rw *rewriter) string {
 	if rw == nil {
 		return data
@@ -159,7 +160,19 @@ func reverseBody(data string, rw *rewriter) string {
 		return rw.rewrite(data)
 	}
 
-	out, err := encodeJSON(rewriteJSONStrings(doc, rw.rewrite))
+	changed := false
+	doc = rewriteJSONStrings(doc, func(s string) string {
+		out := rw.rewrite(s)
+		changed = changed || out != s
+
+		return out
+	})
+
+	if !changed {
+		return data
+	}
+
+	out, err := encodeJSON(doc)
 	if err != nil {
 		return rw.rewrite(data)
 	}
