@@ -816,7 +816,7 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 
 	for range 16 {
 		wg.Go(func() {
-			if _, _, err := mapTargets(engDir, "scan target-corp.com and 52.94.236.248"); err != nil {
+			if _, _, err := mapTargets(engDir, nil, "scan target-corp.com and 52.94.236.248"); err != nil {
 				t.Errorf("mapTargets: %v", err)
 			}
 		})

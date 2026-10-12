@@ -124,7 +124,7 @@ func verifyInput(paths []string, rw *rewriter) int {
 	unmapped := 0
 
 	for _, source := range readSources(paths) {
-		residual := residualTargets(rw.rewrite(source.text))
+		residual := residualTargets(nil, rw.rewrite(source.text))
 		if len(residual) == 0 {
 			fmt.Printf("  ok    %s\n", source.name)
 			continue
