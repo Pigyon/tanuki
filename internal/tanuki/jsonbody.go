@@ -82,12 +82,13 @@ func rewriteJSONStrings(v any, fn func(string) string) any {
 	return v
 }
 
-// jsonText returns every key and string in v except opaque and binary ones,
-// one per line: the decoded text that detection and the residual check scan.
-// Scanning the raw body instead reads escapes as text ("\nacme.com" as
-// "nacme.com").
-func jsonText(v any) string {
-	var b strings.Builder
+// jsonStrings returns every key and string in v except opaque and binary
+// ones: the decoded text that detection and the residual check scan. Scanning
+// the raw body instead reads escapes as text ("\nacme.com" as "nacme.com").
+// Each string is scanned on its own, so one seen in an earlier request is not
+// scanned again (see memoCache).
+func jsonStrings(v any) []string {
+	var out []string
 
 	var walk func(any)
 
@@ -99,8 +100,8 @@ func jsonText(v any) string {
 					continue
 				}
 
-				b.WriteString(k)
-				b.WriteByte('\n')
+				out = append(out, k)
+
 				walk(val)
 			}
 		case []any:
@@ -108,14 +109,13 @@ func jsonText(v any) string {
 				walk(val)
 			}
 		case string:
-			b.WriteString(t)
-			b.WriteByte('\n')
+			out = append(out, t)
 		}
 	}
 
 	walk(v)
 
-	return b.String()
+	return out
 }
 
 // decodeJSON parses a whole body, keeping numbers exact. It reports false for
