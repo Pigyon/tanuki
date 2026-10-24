@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,11 +56,24 @@ func runProxy() {
 		fatal(err.Error())
 	}
 
+	// Bind before writing any Claude Code config. configureHooks points this
+	// directory at the proxy, and a start that fails after that -- a port
+	// already in use, a second "compose up" -- left the redirect behind with
+	// nothing ever listening, which is the ECONNREFUSED state. fatal() exits
+	// past the cleanup at the end, so the only safe order is to fail first.
+	var lc net.ListenConfig
+
+	listener, err := lc.Listen(context.Background(), "tcp", "0.0.0.0:"+port)
+	if err != nil {
+		fatal("proxy listen failed: " + err.Error())
+	}
+
 	if err := configureHooks(); err != nil {
 		fatal(err.Error())
 	}
 
 	if err := generateClaudeMD(engDir); err != nil {
+		restoreClaudeCodeConfig()
 		fatal(err.Error())
 	}
 
@@ -92,7 +106,7 @@ func runProxy() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -101,7 +115,8 @@ func runProxy() {
 	case <-ctx.Done():
 		logger.Info("shutting down proxy")
 	case err := <-errCh:
-		fatal("proxy listen failed: " + err.Error())
+		restoreClaudeCodeConfig()
+		fatal("proxy failed: " + err.Error())
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -111,19 +126,21 @@ func runProxy() {
 		logger.Error("shutdown error", "error", err)
 	}
 
-	// configureHooks pointed Claude Code at this proxy on start; undo that now.
-	// Left behind, ANTHROPIC_BASE_URL sends the next session to a port nothing
-	// is listening on (ECONNREFUSED), and every tool call tries to docker exec
-	// a container that is gone. A restart re-applies it, so this is only ever
-	// in effect while the proxy is actually down.
+	restoreClaudeCodeConfig()
+}
+
+// restoreClaudeCodeConfig undoes what configureHooks and generateClaudeMD
+// wrote. Left behind, ANTHROPIC_BASE_URL sends the next session in this
+// directory to a port nothing is listening on (ECONNREFUSED) and every tool
+// call tries to docker exec a container that is gone, while the cover story
+// tells that session the project is called DEVTARGET. A restart re-applies
+// both, so they are in effect only while the proxy is.
+func restoreClaudeCodeConfig() {
 	settingsPath := filepath.Join(".claude", "settings.json")
 	if fileExists(settingsPath) {
 		removeTanukiSettings(settingsPath)
 	}
 
-	// The cover story goes with it. Left behind, it tells the next session in
-	// this directory that the project is called DEVTARGET and runs on
-	// localhost, with no proxy behind that any more.
 	claudeMDPath := filepath.Join(".claude", "CLAUDE.md")
 	if fileExists(claudeMDPath) {
 		removeTanukiClaudeMD(claudeMDPath)

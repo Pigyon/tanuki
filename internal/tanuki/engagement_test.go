@@ -576,3 +576,22 @@ func TestRulesThatWouldRefuseEveryBodyAreRejected(t *testing.T) {
 		t.Errorf("an unrelated rule was rejected: %v", err)
 	}
 }
+
+// TestAddRejectsThingsThatAreNotDomains: "tanuki add acme.com extra" used to
+// map "extra" as a target, and a bare word made a full set of mappings. The
+// operator is told a target is protected when nothing of the sort happened.
+func TestAddRejectsThingsThatAreNotDomains(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range []string{"not a domain", "now", "extra", "localhost", "", "."} {
+		if err := addDomain(newTestEngagement(t), bad, ""); err == nil {
+			t.Errorf("addDomain(%q) was accepted", bad)
+		}
+	}
+
+	for _, good := range []string{"acme.com", "dev.io", "sub.acme.co.uk"} {
+		if err := addDomain(newTestEngagement(t), good, ""); err != nil {
+			t.Errorf("addDomain(%q) was rejected: %v", good, err)
+		}
+	}
+}

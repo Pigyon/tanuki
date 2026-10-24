@@ -1063,13 +1063,26 @@ func addHostOnlyDomain(engDir, domain string) error {
 	return addDomainMappings(engDir, domain, "", false)
 }
 
+// registrableName returns the label a domain's org, path and cloud fictions
+// are built from, refusing anything that is not a hostname. A bare word used
+// to produce a full set of mappings, so "tanuki add acme.com extra" told the
+// operator two targets were protected when "extra" was not one.
+func registrableName(domain string) (string, error) {
+	org := extractOrgName(domain)
+	if org == "" || !strings.Contains(domain, ".") || !domainRegex.MatchString(domain) {
+		return "", fmt.Errorf("not a domain: %q", domain)
+	}
+
+	return org, nil
+}
+
 func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	// Lowercase so the table has no "Amazon.com"/"amazon.com" duplicates.
 	domain = strings.ToLower(strings.TrimRight(domain, "."))
 
-	orgName := extractOrgName(domain)
-	if orgName == "" {
-		return fmt.Errorf("invalid domain: %s", domain)
+	orgName, err := registrableName(domain)
+	if err != nil {
+		return err
 	}
 
 	baseFiction := resolveFictionOrg(engDir, fictionOrg)
