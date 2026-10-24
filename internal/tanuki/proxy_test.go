@@ -367,3 +367,73 @@ func TestIsMessagesRequest(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestEnvelopeIsGated: the rewriter only ever saw the body. A
+// compressed body it could not read was forwarded whole, and a real value in
+// the query string or a header went upstream while the log said the request
+// was anonymized.
+func TestRequestEnvelopeIsGated(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	handler := &proxyHandler{upstream: upstream.URL}
+	body := `{"messages":[{"role":"user","content":"hi"}]}`
+
+	refused := []struct {
+		name          string
+		query, header string
+		encoding      string
+	}{
+		{name: "gzip body", encoding: "gzip"},
+		{name: "target in query", query: "t=" + testBaseDomain},
+		{name: "target in header", header: "engagement against " + testBaseDomain},
+	}
+
+	for _, tc := range refused {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+			"/v1/messages?"+tc.query, strings.NewReader(body))
+		if tc.encoding != "" {
+			req.Header.Set("Content-Encoding", tc.encoding)
+		}
+
+		if tc.header != "" {
+			req.Header.Set("X-Note", tc.header)
+		}
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", tc.name, rec.Code)
+		}
+
+		if strings.Contains(rec.Body.String(), testBaseDomain) {
+			t.Errorf("%s: the refusal names the real value: %s", tc.name, rec.Body)
+		}
+	}
+
+	// What Claude Code actually sends must still go through.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"/v1/messages?beta=true", strings.NewReader(body))
+	for name, value := range map[string]string{
+		"x-api-key": "sk-ant-api03-abcdef", "anthropic-version": "2023-06-01",
+		"anthropic-beta": "prompt-caching-2024-07-31", "content-type": "application/json",
+		"user-agent": "claude-cli/2.1.310 (external, cli)", "accept-encoding": "gzip, deflate",
+	} {
+		req.Header.Set(name, value)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("an ordinary request was refused: %d %s", rec.Code, rec.Body)
+	}
+}
