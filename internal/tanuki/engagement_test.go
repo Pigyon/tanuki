@@ -214,6 +214,34 @@ func TestMappingExistsMatchesWholeFields(t *testing.T) {
 	}
 }
 
+// TestConfigureHooksKeepsUnparseableSettings: settings.json was replaced with
+// a tanuki-only file whenever it did not parse, so a stray comma cost the
+// operator their permissions and env -- silently, on every proxy start.
+//
+//nolint:paralleltest // t.Chdir forbids t.Parallel.
+func TestConfigureHooksKeepsUnparseableSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	const broken = `{"permissions":{"allow":["Bash(ls:*)"]},}`
+
+	path := filepath.Join(".claude", "settings.json")
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureHooks(); err == nil {
+		t.Error("configureHooks accepted an unparseable settings.json")
+	}
+
+	if got := readFileContent(path); got != broken {
+		t.Errorf("settings.json was modified:\n got %s\nwant %s", got, broken)
+	}
+}
+
 // TestConfigureHooksInstallsOnlyPreToolUse: the proxy covers what the prompt
 // and tool-output hooks did, and an upgrade must remove the ones an older
 // version installed while keeping the operator's own.

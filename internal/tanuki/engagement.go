@@ -434,6 +434,38 @@ func cmdActivate(args []string) {
 	fmt.Printf("[tanuki] Activated engagement: %s\n", name)
 }
 
+// readSettings loads .claude/settings.json, or returns an empty map when
+// there is no file yet.
+//
+// A file that exists but does not parse is an error, never a fresh start: the
+// file is the operator's, and overwriting it threw away their permissions and
+// env on every proxy start. removeTanukiSettings already refuses in the same
+// situation.
+func readSettings(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]any{}, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var settings map[string]any
+
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, fmt.Errorf(
+			"%s is not valid JSON (%w); fix or move it, then start tanuki again -- "+
+				"refusing to overwrite it", path, err)
+	}
+
+	if settings == nil {
+		settings = map[string]any{}
+	}
+
+	return settings, nil
+}
+
 func configureHooks() error {
 	if err := os.MkdirAll(".claude", 0o750); err != nil {
 		return fmt.Errorf("creating .claude directory: %w", err)
@@ -443,16 +475,9 @@ func configureHooks() error {
 
 	settingsPath := filepath.Join(".claude", "settings.json")
 
-	var settings map[string]any
-
-	if raw, err := os.ReadFile(settingsPath); err == nil {
-		if json.Unmarshal(raw, &settings) != nil {
-			logger.Warn("could not parse existing settings, starting fresh", "path", settingsPath)
-		}
-	}
-
-	if settings == nil {
-		settings = make(map[string]any)
+	settings, err := readSettings(settingsPath)
+	if err != nil {
+		return err
 	}
 
 	hookCmd := "docker exec -i tanuki /tanuki hook"
