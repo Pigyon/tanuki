@@ -143,6 +143,17 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    paralleltest:
+      # t.Setenv and t.Chdir panic when the test also calls t.Parallel, and
+      # most tests here drive process-wide state. Keep the checks for misuse
+      # of t.Parallel; drop the one that cannot see why it is absent.
+      ignore-missing: true
+      ignore-missing-subtests: true
+    dupword:
+      # Rewriting tests feed repeated words on purpose.
+      ignore:
+        - acme
+        - dev
     wsl_v5:
       allow-first-in-block: true
       allow-whole-block: false

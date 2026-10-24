@@ -38,8 +38,6 @@ func proxyEngagement(t *testing.T, domains ...string) string {
 // hooks only observe the typed prompt and tool output, so a target arriving in
 // an @-mentioned file, a paste, or a session resumed elsewhere used to reach
 // the API verbatim as long as any other mapping existed.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyMapsTargetsTheHooksNeverSee(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -61,8 +59,6 @@ func TestProxyMapsTargetsTheHooksNeverSee(t *testing.T) {
 // TestProxyMappingsAreStableAcrossRequests: the second request must reuse the
 // fictions the first allocated, or the model sees a target change identity
 // mid-conversation and the reverse pass breaks.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyMappingsAreStableAcrossRequests(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -118,8 +114,6 @@ func TestResidualFindsRealValues(t *testing.T) {
 // TestRefusesWhenAValueSurvives: the gate must block, and the message must
 // carry counts only. The client may fold an error into its next prompt, so a
 // value named here would leak on the following turn.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestRefusesWhenAValueSurvives(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -168,8 +162,6 @@ func TestGateCatchesOrgNamesAndCustomRules(t *testing.T) {
 
 // TestOrgInProtocolFieldIsNotALeak: protocol values are never rewritten, so an
 // org whose name is also a role ("user") must not be read as a leak there.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestOrgInProtocolFieldIsNotALeak(t *testing.T) {
 	proxyEngagement(t, "user.com")
 
@@ -189,8 +181,6 @@ func TestOrgInProtocolFieldIsNotALeak(t *testing.T) {
 
 // TestAWSAccountIDsAreMapped: an ARN carried the account ID upstream, and
 // cloud engagements are full of them.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAWSAccountIDsAreMapped(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -240,8 +230,6 @@ func TestOnLeakWarnForwardsAnyway(t *testing.T) {
 // first request carrying a target is anonymized and forwarded rather than
 // refused -- the safety property is that nothing real leaves, not that nothing
 // leaves at all.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyMapsOnFirstSightInsteadOfRefusing(t *testing.T) {
 	engDir := proxyEngagement(t) // no mappings at all
 
@@ -262,8 +250,6 @@ func TestProxyMapsOnFirstSightInsteadOfRefusing(t *testing.T) {
 // TestProxyStillRefusesWithNothingMapped keeps the documented behaviour for a
 // body that holds no recognisable target: an empty table means the engagement
 // is not set up, and a value with an uncurated TLD would slip past detection.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyStillRefusesWithNothingMapped(t *testing.T) {
 	proxyEngagement(t)
 
@@ -275,8 +261,6 @@ func TestProxyStillRefusesWithNothingMapped(t *testing.T) {
 // TestAnonymizeIgnoresProviderDomains: Claude Code's system prompt names the
 // provider's own domains on every request. Mapping them made "claude" an org,
 // which rewrote the model name.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeIgnoresProviderDomains(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -305,8 +289,6 @@ func TestAnonymizeIgnoresProviderDomains(t *testing.T) {
 // their subdomains, like docs.google.com) land in the body as infrastructure,
 // not targets. Auto-detection must leave them, so their org words are not
 // rewritten everywhere.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeIgnoresDeveloperPlatformDomains(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -332,8 +314,6 @@ func TestAnonymizeIgnoresDeveloperPlatformDomains(t *testing.T) {
 // TestAddOverridesIgnoredDomain: a built-in-ignored domain can still be the
 // real target, so "tanuki add" maps it explicitly and the proxy then rewrites
 // it like any other.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAddOverridesIgnoredDomain(t *testing.T) {
 	engDir := proxyEngagement(t)
 
@@ -358,8 +338,6 @@ func TestAddOverridesIgnoredDomain(t *testing.T) {
 // not a target. It is ignored for that request without becoming a mapping, and
 // discovered from the body so no address is hard-coded. A fictional operator
 // domain stands in for the real one.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeIgnoresOperatorEmailDomain(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -381,8 +359,6 @@ func TestAnonymizeIgnoresOperatorEmailDomain(t *testing.T) {
 // TestOperatorEmailIgnoreDoesNotLeakOtherEmails: the ignore is anchored to the
 // userEmail marker, so an address quoted elsewhere in the same body is still a
 // target. Were it not, naming a target's contact would silently leak it.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestOperatorEmailIgnoreDoesNotLeakOtherEmails(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -410,8 +386,6 @@ func TestOperatorEmailIgnoreDoesNotLeakOtherEmails(t *testing.T) {
 // returned, so if that content could supply the "operator" email, a target
 // could forge "# userEmail ...@itself" to exempt itself from anonymization.
 // The marker is only honoured outside tool_result blocks.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestForgedUserEmailInToolResultCannotExemptTarget(t *testing.T) {
 	// A mapped target keeps the table non-empty, so detection runs rather than
 	// the request being refused for having nothing to map.

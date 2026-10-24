@@ -90,7 +90,6 @@ func post(t *testing.T, url, path, body string) (status int, respBody string) {
 	return resp.StatusCode, string(out)
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyRewritesRequestToFiction(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -145,7 +144,6 @@ func TestProxyFailsClosedWithoutEngagement(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 	setupEngagement(t) // active engagement, but zero mappings
 
@@ -171,7 +169,6 @@ func TestProxyFailsClosedOnEmptyMappings(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyPassesThroughNonMessagesPath(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -194,7 +191,6 @@ func TestProxyPassesThroughNonMessagesPath(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyReversesJSONResponse(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -215,7 +211,6 @@ func TestProxyReversesJSONResponse(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestProxyReversesSSEResponse(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -245,8 +240,6 @@ func TestProxyReversesSSEResponse(t *testing.T) {
 
 // TestProxyRejectsOversizedBodyAsFinal: over the limit was a 502, which the
 // client retries; it is a 413 now, and the limit matches the API's 32 MB.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyRejectsOversizedBodyAsFinal(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -275,8 +268,6 @@ func TestProxyRejectsOversizedBodyAsFinal(t *testing.T) {
 
 // TestProxyRefusalIsAnAPIError: Claude Code shows the message of an error in
 // the Anthropic format; a plain-text 503 was retried and then shown as noise.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyRefusalIsAnAPIError(t *testing.T) {
 	setupEngagement(t)
 
@@ -307,8 +298,6 @@ func TestProxyRefusalIsAnAPIError(t *testing.T) {
 
 // TestProxyReportsBrokenUpstreamBody: the status used to go out before the
 // body was read, so a dropped upstream became a 200 with an empty body.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestProxyReportsBrokenUpstreamBody(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -328,8 +317,6 @@ func TestProxyReportsBrokenUpstreamBody(t *testing.T) {
 // a raw prefix match, so "//v1/messages", "/v1/../v1/messages" and
 // "/V1/messages" reached the same endpoint upstream while skipping the rewrite
 // entirely. The prompt was forwarded verbatim.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestPathConfusionCannotSkipAnonymization(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 

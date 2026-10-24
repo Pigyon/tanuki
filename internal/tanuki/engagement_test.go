@@ -217,8 +217,6 @@ func TestMappingExistsMatchesWholeFields(t *testing.T) {
 // TestConfigureHooksKeepsUnparseableSettings: settings.json was replaced with
 // a tanuki-only file whenever it did not parse, so a stray comma cost the
 // operator their permissions and env -- silently, on every proxy start.
-//
-//nolint:paralleltest // t.Chdir forbids t.Parallel.
 func TestConfigureHooksKeepsUnparseableSettings(t *testing.T) {
 	t.Chdir(t.TempDir())
 
@@ -245,8 +243,6 @@ func TestConfigureHooksKeepsUnparseableSettings(t *testing.T) {
 // TestConfigureHooksInstallsOnlyPreToolUse: the proxy covers what the prompt
 // and tool-output hooks did, and an upgrade must remove the ones an older
 // version installed while keeping the operator's own.
-//
-//nolint:paralleltest // t.Chdir forbids t.Parallel.
 func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 	t.Chdir(t.TempDir())
 

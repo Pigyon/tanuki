@@ -89,8 +89,6 @@ func assertObjectPreserved(t *testing.T, path string, orig map[string]any, out a
 
 // TestClaudeCodeRequest runs a Claude Code request through anonymization on a
 // fresh engagement, as the first request of a session does.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestClaudeCodeRequest(t *testing.T) {
 	engDir := proxyEngagement(t)
 	body := readFixture(t, "claude_code_request.json")
@@ -185,8 +183,6 @@ func readSSE(t *testing.T, stream string) sseClient {
 
 // TestClaudeCodeResponse streams a Claude Code response back through the
 // proxy's SSE path.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestClaudeCodeResponse(t *testing.T) {
 	engDir := proxyEngagement(t, "acme-corp.com", "sso.acme-corp.com")
 	stream := string(readFixture(t, "claude_code_response.sse"))
@@ -220,8 +216,6 @@ func TestClaudeCodeResponse(t *testing.T) {
 
 // TestStreamReleasesHeldTextAtEnd: a stream cut off before its block ends
 // must still deliver the tail it was holding back, reversed.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestStreamReleasesHeldTextAtEnd(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -240,8 +234,6 @@ func TestStreamReleasesHeldTextAtEnd(t *testing.T) {
 
 // TestSplitHeldKeepsOnlyPossibleFiction: text is held back only while its tail
 // could still become a fiction value, so ordinary text streams through.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestSplitHeldKeepsOnlyPossibleFiction(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 	rw := newRewriter(loadMappings(engDir), directionF2R)

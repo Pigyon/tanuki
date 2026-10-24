@@ -74,7 +74,6 @@ func hookEnvelope(t *testing.T, out string) map[string]any {
 	return hso
 }
 
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHookPreToolUseReversesInput(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -101,8 +100,6 @@ func TestHookPreToolUseReversesInput(t *testing.T) {
 // TestHookLegacyEventsAreNoops pins the hooks older versions installed: until
 // the proxy restarts and rewrites settings.json, Claude Code still calls them,
 // and they must answer "{}" rather than fail.
-//
-//nolint:paralleltest // runHook swaps the process-wide os.Stdin and os.Stdout.
 func TestHookLegacyEventsAreNoops(t *testing.T) {
 	for _, name := range []string{"post-tool-use", "user-prompt-submit"} {
 		out := runHook(t, func() { cmdHook([]string{name}) }, `{"prompt":"check bounty.target.com"}`)
@@ -114,8 +111,6 @@ func TestHookLegacyEventsAreNoops(t *testing.T) {
 
 // TestHookEmitsEmptyObjectWhenNothingToDo pins the no-op contract: a tool with
 // no rewritable input must emit exactly "{}", not an envelope.
-//
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHookEmitsEmptyObjectWhenNothingToDo(t *testing.T) {
 	setupEngagement(t, testBaseDomain)
 
@@ -131,8 +126,6 @@ func TestHookEmitsEmptyObjectWhenNothingToDo(t *testing.T) {
 // a stale active marker made it create "default" and switch to it. The
 // operator's engagement, and every mapping in it, silently stopped being used,
 // and the tool ran with fiction arguments pointed at localhost.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestHookDoesNotCreateOrSwitchEngagements(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
