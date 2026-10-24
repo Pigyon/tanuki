@@ -54,51 +54,72 @@ var userEmailRegex = regexp.MustCompile(`(?is)#\s*userEmail\b.{0,200}?([a-z0-9._
 // if Claude Code's userEmail block is present, so a single request can ignore
 // it without it ever becoming a mapping. Empty for any other client or body.
 //
-// It walks the decoded body and refuses to read the marker out of a
-// tool_result block. That block carries whatever the target returned -- an HTTP
-// response, command output, a fetched page -- so trusting it would let a target
-// forge "# userEmail ...@real-target.com" to exempt itself from anonymization
-// and leak. The genuine block is a Claude Code system reminder, never tool
-// output, so skipping tool_result loses nothing.
+// Only the places Claude Code writes that block are read: the system prompt,
+// and user-role content that is not a tool_result. Everything else carries
+// text a target may have chosen. A page saying "# userEmail admin@target.com"
+// is summarised by the model into an assistant block, or returned through a
+// tool_result, and reading the marker there let the target exempt itself from
+// anonymization for the rest of the session -- domain, subdomains and all.
 func operatorIgnoredDomains(doc any) []string {
-	seen := map[string]bool{}
-	out := []string{}
+	body, _ := doc.(map[string]any)
+	if body == nil {
+		return nil
+	}
 
-	var walk func(v any)
+	found := &operatorEmails{seen: map[string]bool{}}
 
-	walk = func(v any) {
-		switch t := v.(type) {
-		case map[string]any:
-			if t[typeKey] == "tool_result" {
-				return
-			}
+	found.scan(body["system"])
 
-			for _, val := range t {
-				walk(val)
-			}
-		case []any:
-			for _, item := range t {
-				walk(item)
-			}
-		case string:
-			for _, m := range userEmailRegex.FindAllStringSubmatch(t, -1) {
-				at := strings.LastIndex(m[1], "@")
-				if at < 0 {
-					continue
-				}
-
-				base := extractBaseDomain(strings.ToLower(m[1][at+1:]))
-				if base != "" && !seen[base] {
-					seen[base] = true
-					out = append(out, base)
-				}
-			}
+	messages, _ := body["messages"].([]any)
+	for _, m := range messages {
+		msg, _ := m.(map[string]any)
+		if msg != nil && msg["role"] == "user" {
+			found.scan(msg["content"])
 		}
 	}
 
-	walk(doc)
+	return found.domains
+}
 
-	return out
+// operatorEmails collects the base domains of the operator addresses found in
+// the parts of a body that Claude Code, not a target, writes.
+type operatorEmails struct {
+	seen    map[string]bool
+	domains []string
+}
+
+func (o *operatorEmails) scan(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		if t[typeKey] == "tool_result" {
+			return
+		}
+
+		for _, val := range t {
+			o.scan(val)
+		}
+	case []any:
+		for _, item := range t {
+			o.scan(item)
+		}
+	case string:
+		o.add(t)
+	}
+}
+
+func (o *operatorEmails) add(text string) {
+	for _, m := range userEmailRegex.FindAllStringSubmatch(text, -1) {
+		at := strings.LastIndex(m[1], "@")
+		if at < 0 {
+			continue
+		}
+
+		base := extractBaseDomain(strings.ToLower(m[1][at+1:]))
+		if base != "" && !o.seen[base] {
+			o.seen[base] = true
+			o.domains = append(o.domains, base)
+		}
+	}
 }
 
 // isIgnoredDomain reports whether domain, the base domain it belongs to, or
