@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Policy for a real value that is still present after anonymization.
@@ -70,12 +72,20 @@ func operatorIgnoredDomains(doc any) []string {
 
 	found.scan(body["system"])
 
+	// Only the first user message. Claude Code injects the account context at
+	// the start of the conversation and resends it every turn, while later
+	// user messages carry @-mentioned file contents and pastes -- target
+	// material on an engagement, and a place to plant the marker.
 	messages, _ := body["messages"].([]any)
 	for _, m := range messages {
 		msg, _ := m.(map[string]any)
-		if msg != nil && msg["role"] == "user" {
-			found.scan(msg["content"])
+		if msg == nil || msg["role"] != "user" {
+			continue
 		}
+
+		found.scan(msg["content"])
+
+		break
 	}
 
 	return found.domains
@@ -115,7 +125,16 @@ func (o *operatorEmails) add(text string) {
 		}
 
 		base := extractBaseDomain(strings.ToLower(m[1][at+1:]))
-		if base != "" && !o.seen[base] {
+
+		// A bare public suffix is not an address anyone owns: extractBaseDomain
+		// hands "co.uk" straight back, and ignoring that exempts every domain
+		// under it. One forged "# userEmail admin@co.uk" turned off
+		// anonymization for all of .co.uk.
+		if suffix, _ := publicsuffix.PublicSuffix(base); base == "" || base == suffix {
+			continue
+		}
+
+		if !o.seen[base] {
 			o.seen[base] = true
 			o.domains = append(o.domains, base)
 		}
