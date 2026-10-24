@@ -746,6 +746,21 @@ func extractOrgName(domain string) string {
 	return domain
 }
 
+// baseLinesFor returns the mappings a base domain gets: the hostname alone
+// when it was merely seen, the full derived set when it is a target.
+func baseLinesFor(engDir, baseDomain, orgName, baseFiction string, port int, derived bool) ([]string, error) {
+	if !derived {
+		return []string{fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port)}, nil
+	}
+
+	fiction, err := allocateOrgFiction(engDir, baseFiction)
+	if err != nil {
+		return nil, err
+	}
+
+	return baseMappingLines(baseDomain, port, orgName, fiction), nil
+}
+
 // baseMappingLines builds the domain mapping and the org, email, path, and
 // cloud values derived from it. Every fiction is tied to fictionOrg so distinct
 // real orgs reverse to distinct targets instead of colliding.
@@ -915,7 +930,20 @@ func resolveFictionOrg(engDir, fictionOrg string) string {
 	return defaultFictionOrg
 }
 
+// addDomain maps domain as a target: the hostname, plus the org, email, path
+// and cloud values derived from it.
 func addDomain(engDir, domain, fictionOrg string) error {
+	return addDomainMappings(engDir, domain, fictionOrg, true)
+}
+
+// addHostOnlyDomain maps just the hostname, for a domain that was seen but is
+// not in scope. No org rule is created, so its name keeps its ordinary meaning
+// everywhere else in the conversation.
+func addHostOnlyDomain(engDir, domain string) error {
+	return addDomainMappings(engDir, domain, "", false)
+}
+
+func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	// Lowercase so the table has no "Amazon.com"/"amazon.com" duplicates.
 	domain = strings.ToLower(strings.TrimRight(domain, "."))
 
@@ -942,12 +970,12 @@ func addDomain(engDir, domain, fictionOrg string) error {
 			return err
 		}
 
-		fiction, err := allocateOrgFiction(engDir, baseFiction)
+		base, err := baseLinesFor(engDir, baseDomain, orgName, baseFiction, port, derived)
 		if err != nil {
 			return err
 		}
 
-		lines = append(lines, baseMappingLines(baseDomain, port, orgName, fiction)...)
+		lines = append(lines, base...)
 	}
 
 	if !existing[mappingKey(mapWildcard, "*."+baseDomain)] {

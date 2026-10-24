@@ -22,6 +22,7 @@ var commands = map[string]func(args []string){
 	"add":         cmdAdd,
 	"add-ip":      cmdAddIP,
 	"add-account": cmdAddAccount,
+	"scope":       cmdScope,
 	"add-rule":    cmdAddRule,
 	"map":         func([]string) { cmdMap() },
 	"status":      func([]string) { cmdStatus() },
@@ -74,6 +75,7 @@ Commands:
   add <domain> [--fiction-org NAME]  Pre-seed a target domain
   add-ip <ip>                       Pre-seed an IP mapping
   add-account <id>                  Pre-seed an AWS account ID mapping
+  scope [list|add|rm] <domain>      Show or edit which domains are targets
   add-rule <real> <fiction>          Add a custom rewrite rule
   map                               Show current mapping table
   status                            Show engagement info

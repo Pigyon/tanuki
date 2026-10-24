@@ -26,6 +26,11 @@ services:
       #- TANUKI_DOMAINS=example.com,api.example.com
       ## Pre-seed target IPs (comma-separated):
       #- TANUKI_IPS=93.184.216.34
+      ## In-scope domains (comma-separated, covers subdomains). Domains in
+      ## scope get org/email/path/cloud mappings; anything else that is
+      ## detected is mapped by hostname only. Empty means everything detected
+      ## is treated as a target:
+      #- TANUKI_SCOPE=example.com,example.org
       ## Custom rewrite rules (semicolon-separated, pipe-delimited real|fiction):
       #- TANUKI_RULES=John Smith|Jane Developer;Project Phoenix|Test Alpha
       ## Domains never treated as targets (comma-separated, covers subdomains):

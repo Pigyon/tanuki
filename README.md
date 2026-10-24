@@ -32,6 +32,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 - [Example](#example)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+  - [Scope](#scope)
 - [CLI reference](#cli-reference)
 - [What gets rewritten](#what-gets-rewritten)
 - [Environment variables](#environment-variables)
@@ -181,6 +182,33 @@ For strings that aren't domains or IPs (people, project names, internal jargon),
 ./tanuki add-rule "Project Phoenix" "Test Alpha"
 ```
 
+### Scope
+
+A bug bounty program publishes what is in scope. Tell tanuki, and it treats
+those domains as targets while anything else it detects is merely hidden:
+
+```bash
+./tanuki scope add '*.amazon.com'
+./tanuki scope list
+```
+
+| | In scope | Detected, out of scope |
+| --- | --- | --- |
+| Hostname → `localhost:<port>` | yes | yes |
+| Org, email, path, cloud mappings | yes | no |
+
+The difference matters because an org mapping rewrites a bare word everywhere.
+Without a scope, one `docs.python.org` in tool output makes `python` an org, and
+`written in Python` reaches the model as `written in DEVTARGET2`. With a scope,
+that domain still gets a hostname mapping, so nothing about it leaks, but the
+word keeps its meaning.
+
+An empty scope means every detected domain is treated as a target, which is how
+an engagement behaves until you set one. `./tanuki add` always creates the full
+set of mappings: it is an explicit statement that the domain is a target.
+
+Pre-configure it in `compose.yaml` with `TANUKI_SCOPE=amazon.com,example.org`.
+
 ### Named engagements
 
 For separate projects or custom fiction org names:
@@ -201,6 +229,9 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `add <domain> [--fiction-org NAME]` | Pre-seed a target domain                           |
 | `add-ip <ip>`                       | Pre-seed an IP mapping                             |
 | `add-account <id>`                  | Pre-seed an AWS account ID mapping                 |
+| `scope [list]`                      | Show which domains are treated as targets          |
+| `scope add <domain>`                | Add a domain to the engagement scope               |
+| `scope rm <domain>`                 | Remove a domain from the scope                     |
 | `add-rule <real> <fiction>`         | Add a custom rewrite rule                          |
 | `map`                               | Show the current mapping table                     |
 | `status`                            | Show engagement info                               |
@@ -222,7 +253,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | Type            | Detection                              | Fiction                    |
 | --------------- | -------------------------------------- | -------------------------- |
 | Domains         | Auto-detected in prompts & tool output; any real TLD in a URL, after `@`, or with a path/port | `localhost:<port>`         |
-| Org names       | Derived from domain; also matched inside identifiers (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
+| Org names       | In-scope domains only (see [Scope](#scope)); matched inside identifiers too (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
 | Emails          | Derived from domain                    | `user@devtarget.local`     |
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |
@@ -249,6 +280,7 @@ Set in `compose.yaml`:
 | `TANUKI_FICTION_ORG` | `DEVTARGET`                 | Fiction org name for mappings                            |
 | `TANUKI_DOMAINS`     | _(none)_                    | Comma-separated domains to pre-seed                      |
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
+| `TANUKI_SCOPE`       | _(none)_                    | Comma-separated in-scope domains (subdomains included). Empty means every detected domain is a target |
 | `TANUKI_RULES`       | _(none)_                    | Custom rules: `real\|fiction` pairs, semicolon-separated |
 | `TANUKI_IGNORE`      | _(none)_                    | Comma-separated domains never treated as targets (subdomains included). Always ignored: `anthropic.com`, `claude.com`, `claude.ai`, `json-schema.org`, the developer-platform domains Claude Code surfaces (`github.com`, `google.com`), and the operator's own email domain from Claude Code's account context. If one of these is your real target, `./tanuki add <domain>` maps it explicitly |
 | `TANUKI_UID` / `TANUKI_GID` | `1000`               | Owner for a `.claude/` directory Docker had to create; an existing one keeps its owner |
