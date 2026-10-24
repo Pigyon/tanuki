@@ -134,6 +134,51 @@ func TestAnonymizeReadsDecodedStrings(t *testing.T) {
 	}
 }
 
+// TestToolInputDataFieldIsAnonymized: "data" was treated as base64 whenever
+// its object was not a text block, but a tool's arguments are an object of the
+// tool's own making. A tool called with a "data" argument -- and Claude Code
+// resends every tool_use in history -- went upstream unrewritten, and the
+// fail-closed gate skipped it too, so nothing reported the leak.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestToolInputDataFieldIsAnonymized(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"assistant","content":[` +
+		`{"type":"tool_use","name":"Bash","id":"tu_1","input":` +
+		`{"data":"curl https://bounty.amazon.com","command":"ping ` + testPublicIP + `"}}]}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	for _, real := range []string{testSubDomain, testBaseDomain, testPublicIP} {
+		if strings.Contains(string(out), real) {
+			t.Errorf("real value %q reached the upstream body: %s", real, out)
+		}
+	}
+}
+
+// TestRedactedThinkingPassesThrough: its "data" is an encrypted blob the API
+// has to get back byte for byte.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestRedactedThinkingPassesThrough(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	const blob = "EvwBCkYIARgCKkB+amazon/redacted=="
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"assistant","content":[` +
+		`{"type":"redacted_thinking","data":"` + blob + `"},` +
+		`{"type":"text","text":"ok"}]}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	if got := field(t, out, "messages", 0, "content", 0, "data"); got != blob {
+		t.Errorf("redacted thinking changed: %q", got)
+	}
+}
+
 // TestAnonymizeKeepsSignedAndBinaryData: a thinking block must go back exactly
 // as the model wrote it or its signature fails, and base64 must not be hit by
 // a word-bounded rule between "+" and "/".
