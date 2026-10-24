@@ -2,7 +2,6 @@ package tanuki
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -73,11 +72,7 @@ func (s scope) isTarget(domain string) bool {
 // whether it did.
 func addToScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
-	if p == "" {
-		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
-	}
-
-	if strings.ContainsAny(p, "|\r\n") {
+	if p == "" || strings.ContainsAny(p, "|\r\n") {
 		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
 	}
 
@@ -114,7 +109,7 @@ func writeScope(engDir string, s scope) error {
 		content += strings.Join(s, "\n") + "\n"
 	}
 
-	return os.WriteFile(filepath.Join(engDir, scopeFile), []byte(content), 0o600)
+	return writeFileContent(filepath.Join(engDir, scopeFile), content)
 }
 
 // seedEnvScope adds the comma-separated patterns in TANUKI_SCOPE.
