@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -124,7 +125,9 @@ func verifyInput(paths []string, rw *rewriter) int {
 	unmapped := 0
 
 	for _, source := range readSources(paths) {
-		residual := residualTargets(nil, rw.rewrite(source.text))
+		rewritten := rw.rewrite(source.text)
+
+		residual := slices.Concat(residualTargets(nil, rewritten), rw.survivors(rewritten))
 		if len(residual) == 0 {
 			fmt.Printf("  ok    %s\n", source.name)
 			continue

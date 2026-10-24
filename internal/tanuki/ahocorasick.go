@@ -164,12 +164,18 @@ func (m *acMachine) search(text string) []acMatch {
 	return matches
 }
 
+// find returns every match whose pattern's bound holds, overlapping ones
+// included.
+func (m *acMachine) find(text string) []acMatch {
+	return m.keepBounded(text, m.search(text))
+}
+
 func (m *acMachine) replaceAll(text string) string {
 	if len(m.patterns) == 0 {
 		return text
 	}
 
-	matches := m.keepBounded(text, m.search(text))
+	matches := m.find(text)
 	if len(matches) == 0 {
 		return text
 	}

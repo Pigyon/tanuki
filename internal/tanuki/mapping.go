@@ -64,6 +64,9 @@ type rewriter struct {
 	// so a stream can tell whether its tail may be the start of one.
 	heads   map[string]bool
 	maxHead int
+	// residue finds the org names and custom-rule values a rewrite should have
+	// removed (r2f only), for the fail-closed gate; see survivors.
+	residue *acMachine
 	// memo remembers rewrites of long strings. A rewriter is rebuilt whenever
 	// the mappings change, so a remembered result is never stale.
 	memo memoCache[string]
@@ -286,6 +289,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 
 	if direction == directionR2F {
 		rw.terms = termRewriter
+		rw.residue = newResidueMachine(mappings)
 	} else {
 		rw.heads, rw.maxHead = fictionHeads(mappings)
 	}
@@ -410,13 +414,70 @@ func (rw *rewriter) rewriteText(text string) string {
 		text = rw.ac.replaceAll(text)
 	}
 
+	// Terminology before org, so an org that happens to share a word with a
+	// replacement term is still rewritten and the gate never sees it.
+	text = rw.terms.rewrite(text)
+
 	// Org after the automaton, so a mapped domain is consumed before its bare
 	// org name is matched.
 	if rw.orgs != nil {
 		text = rw.orgs.replaceAll(text)
 	}
 
-	return rw.terms.rewrite(text)
+	return text
+}
+
+// newResidueMachine matches every org name and custom-rule value with the
+// bounds the rewrite uses for it. Domains, emails and IPs are left to the
+// target scan, which also catches the ones that were never mapped.
+func newResidueMachine(mappings []mappingEntry) *acMachine {
+	var orgRules []termEntry
+
+	var custom []string
+
+	for _, m := range mappings {
+		switch m.Type {
+		case "org":
+			orgRules = append(orgRules, orgRule(m, directionR2F))
+		case "custom":
+			custom = append(custom, m.Real)
+		}
+	}
+
+	orgs := newOrgMachine(orgRules)
+	if orgs == nil && len(custom) == 0 {
+		return nil
+	}
+
+	patterns := slices.Clone(custom)
+	bounds := make([]boundKind, len(custom))
+
+	if orgs != nil {
+		patterns = append(patterns, orgs.patterns...)
+		bounds = append(bounds, orgs.bounds...)
+	}
+
+	return newACMachine(patterns, patterns, bounds)
+}
+
+// survivors returns the mapped org names and custom-rule values still present
+// in text that has been rewritten. In a working pipeline it is empty: each is
+// matched exactly as the rewrite matched it, so anything found is a value the
+// rewrite failed to replace.
+func (rw *rewriter) survivors(text string) []string {
+	if rw.residue == nil {
+		return nil
+	}
+
+	var found []string
+
+	for _, m := range rw.residue.find(text) {
+		found = append(found, strings.ToLower(rw.residue.patterns[m.index]))
+	}
+
+	slices.Sort(found)
+
+	return slices.Compact(found)
 }
 
 // rewriteWildcards replaces every wildcard-covered hostname that has no

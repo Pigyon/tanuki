@@ -2,6 +2,7 @@ package tanuki
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -122,7 +123,7 @@ func TestResidualFindsRealValues(t *testing.T) {
 func TestRefusesWhenAValueSurvives(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
-	err := checkResidual(nil, "a stray "+testBaseDomain+" survived")
+	err := checkResidual(nil, nil, "a stray "+testBaseDomain+" survived")
 	if err == nil {
 		t.Fatal("checkResidual accepted a body holding a real value")
 	}
@@ -132,11 +133,65 @@ func TestRefusesWhenAValueSurvives(t *testing.T) {
 	}
 }
 
+// TestGateCatchesOrgNamesAndCustomRules: the gate only rescanned for domains
+// and IPs, so an org name or custom-rule value the rewrite missed went
+// upstream without anyone noticing.
+func TestGateCatchesOrgNamesAndCustomRules(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+
+	if _, err := addCustomRule(engDir, "Project Phoenix", "Test Alpha"); err != nil {
+		t.Fatalf("addCustomRule: %v", err)
+	}
+
+	r2f, _ := rewriters(t, engDir)
+	text := "deploy amazon_prod for project phoenix"
+
+	got := r2f.survivors(text)
+	if !slices.Equal(got, []string{"amazon", "project phoenix"}) {
+		t.Errorf("survivors(%q) = %v, want the org and the rule", text, got)
+	}
+
+	if got := r2f.survivors(r2f.rewrite(text)); len(got) > 0 {
+		t.Errorf("survivors flagged rewritten text: %v", got)
+	}
+
+	if r2f.survivors("the amazonian rainforest") != nil {
+		t.Error("survivors matched the org inside an unrelated word")
+	}
+
+	if err := checkResidual([]string{"amazon"}, nil); err == nil {
+		t.Error("checkResidual accepted a surviving org name")
+	}
+}
+
+// TestOrgInProtocolFieldIsNotALeak: protocol values are never rewritten, so an
+// org whose name is also a role ("user") must not be read as a leak there.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestOrgInProtocolFieldIsNotALeak(t *testing.T) {
+	proxyEngagement(t, "user.com")
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":"ask the user"}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody refused a protocol value: %v", err)
+	}
+
+	if !strings.Contains(string(out), `"role":"user"`) {
+		t.Errorf("protocol field was rewritten: %s", out)
+	}
+
+	if strings.Contains(string(out), "ask the user") {
+		t.Errorf("org in content was not rewritten: %s", out)
+	}
+}
+
 func TestOnLeakWarnForwardsAnyway(t *testing.T) {
 	proxyEngagement(t)
 	t.Setenv("TANUKI_ON_LEAK", onLeakWarn)
 
-	if err := checkResidual(nil, "a stray "+testBaseDomain+" survived"); err != nil {
+	if err := checkResidual(nil, nil, "a stray "+testBaseDomain+" survived"); err != nil {
 		t.Errorf("warn policy still refused: %v", err)
 	}
 }
