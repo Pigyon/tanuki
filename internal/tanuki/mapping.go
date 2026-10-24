@@ -241,10 +241,10 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 
 func noEscape(s string) string { return s }
 
-// newRewriterEscaping builds a rewriter whose replacements are put through
-// escape. It exists for text that is itself inside a JSON string, where a real
-// value carrying a quote or a backslash has to be escaped as it is inserted or
-// the result stops being the JSON it is a fragment of.
+// newRewriterEscaping builds a rewriter whose replacements go through escape,
+// for text that is itself inside a JSON string: a real value carrying a quote
+// or a backslash must be escaped as it is inserted, or the fragment it lands
+// in stops being JSON.
 func newRewriterEscaping(mappings []mappingEntry, direction string, escape func(string) string) *rewriter {
 	if escape == nil {
 		escape = noEscape
@@ -467,8 +467,8 @@ func (rw *rewriter) rewriteText(text string) string {
 }
 
 // newResidueMachine matches every org name and custom-rule value with the
-// bounds the rewrite uses for it. Domains, emails and IPs are left to the
-// target scan, which also catches the ones that were never mapped.
+// bounds the rewrite uses. Domains, emails and IPs are left to the target
+// scan, which also catches the ones that were never mapped.
 func newResidueMachine(mappings []mappingEntry) *acMachine {
 	var orgRules []termEntry
 
@@ -499,10 +499,9 @@ func newResidueMachine(mappings []mappingEntry) *acMachine {
 	return newACMachine(patterns, patterns, bounds)
 }
 
-// survivors returns the mapped org names and custom-rule values still present
-// in text that has been rewritten. In a working pipeline it is empty: each is
-// matched exactly as the rewrite matched it, so anything found is a value the
-// rewrite failed to replace.
+// survivors returns the mapped org names and custom-rule values still in text
+// that has been rewritten. Each is matched exactly as the rewrite matched it,
+// so anything found is a value the rewrite failed to replace.
 func (rw *rewriter) survivors(text string) []string {
 	if rw.residue == nil {
 		return nil
@@ -565,15 +564,13 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	return b.String()
 }
 
-// wildcardPrefix returns the fiction covering host, and how much of host it
+// wildcardPrefix returns the fiction covering host and how much of host it
 // covers. host must already be lowercased.
 //
 // Each whole-label prefix is tried, longest first, so a target carrying a file
-// extension ("bounty.acme.com.txt") is covered up to the hostname and the
-// extension is left alone. Without that the token matched no wildcard at all,
-// and the subdomain label went upstream beside the rewritten base name.
-// Splitting on labels is what keeps this safe: "acme.com" is not a prefix of
-// "acme.community", so an unrelated name is still never touched.
+// extension ("bounty.acme.com.txt") is covered up to the hostname. Splitting
+// on labels is what keeps that safe: "acme.com" is not a label prefix of
+// "acme.community", so an unrelated name is never touched.
 func (rw *rewriter) wildcardPrefix(host string) (fiction string, n int, ok bool) {
 	for end := len(host); end > 0; end = strings.LastIndexByte(host[:end], '.') {
 		if f, hit := rw.wildcardFiction(host[:end]); hit {
@@ -1078,10 +1075,9 @@ func isPrivateIP(ip string) bool {
 	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
 }
 
-// accountRegexes find AWS account IDs where the context says that is what a
-// twelve-digit number is: the account field of an ARN, and an "Account" or
-// "account_id" key or variable (aws sts get-caller-identity,
-// AWS_ACCOUNT_ID=...). A bare twelve-digit number is too common to take.
+// accountRegexes find AWS account IDs where the context says a twelve-digit
+// number is one: the account field of an ARN, and an "Account" or "account_id"
+// key or variable. A bare twelve-digit number is too common to take.
 var accountRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\barn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):`),
 	regexp.MustCompile(`(?i)account(?:[_ -]?id)?["']?\s*[:=]\s*["']?(\d{12})\b`),
@@ -1193,10 +1189,9 @@ type ipMatch struct {
 
 // findIPs returns the addresses re finds in text. A candidate is trimmed to
 // its longest valid prefix, loses a single leading colon ("ip:2001:db8::1"
-// otherwise never parsed), and must stand alone: a letter, digit or "_" on
-// either side means it is part of a longer token, such as the "::1234" the
-// greedy pattern finds in "arn:aws:iam::123456789012", the "f::de" in Rust's
-// "Self::de", or the "1.2.3.45" in "1.2.3.456".
+// otherwise never parsed), and must stand alone -- a letter, digit or "_" on
+// either side means it belongs to a longer token, like the "::1234" inside
+// "arn:aws:iam::123456789012" or the "1.2.3.45" inside "1.2.3.456".
 func findIPs(text string, re *regexp.Regexp) []ipMatch {
 	var found []ipMatch
 
@@ -1288,22 +1283,19 @@ func hasCommonTLD(domain string) bool {
 }
 
 // isRealDomain reports whether domain ends in an ICANN-managed public suffix
-// (.in, .it, .app, ...), with a label in front of it. The curated TLD list is
-// the filter for a bare token; this is the broader test used only where the
-// surroundings already say the token is a host (see hostContext). It accepts
-// every real TLD without accepting code like "config.yaml" or "main.go", whose
-// final element is not a public suffix at all.
+// with a label in front of it. It accepts every real TLD while still rejecting
+// code like "config.yaml" or "main.go", whose last element is no suffix at
+// all. Used only where hostContext already says the token is a host.
 func isRealDomain(domain string) bool {
 	suffix, icann := publicsuffix.PublicSuffix(domain)
 
 	return icann && len(suffix) < len(domain)
 }
 
-// hostContext reports whether text[start:end] sits where only a hostname does:
-// right after a URL scheme ("https://host") or an "@" ("user@host"), or with a
-// path or port right after it ("host/path", "host:443"). A bare token on an
-// uncommon TLD, which is far more often code than a domain, is deliberately
-// not enough; one of these markers is.
+// hostContext reports whether text[start:end] sits where only a hostname
+// does: after "://" or "@", or with a path or port right after it. A bare
+// token on an uncommon TLD is far more often code than a domain, so it needs
+// one of these markers.
 func hostContext(text string, start, end int) bool {
 	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
 		return true

@@ -444,13 +444,10 @@ func cmdActivate(args []string) {
 	fmt.Printf("[tanuki] Activated engagement: %s\n", name)
 }
 
-// readSettings loads .claude/settings.json, or returns an empty map when
-// there is no file yet.
-//
-// A file that exists but does not parse is an error, never a fresh start: the
-// file is the operator's, and overwriting it threw away their permissions and
-// env on every proxy start. removeTanukiSettings already refuses in the same
-// situation.
+// readSettings loads .claude/settings.json, or an empty map when there is no
+// file yet. A file that exists but does not parse is an error, never a fresh
+// start: it is the operator's, and overwriting it threw away their permissions
+// and env. removeTanukiSettings already refuses in the same situation.
 func readSettings(path string) (map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
