@@ -164,29 +164,36 @@ func TestDomainContinues(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		text string
-		i    int
-		want bool
+		name     string
+		text     string
+		start, i int
+		want     bool
 	}{
-		{"end of text", "acme.com", 8, false},
-		{"longer label", "acme.community", 8, true},
-		{"longer name", "acme.com.br", 8, true},
-		{"trailing dot", "acme.com.", 8, false},
-		{"sentence end", "visit acme.com. next", 14, false},
-		{"path", "acme.com/x", 8, false},
-		{"port", "acme.com:443", 8, false},
-		{"comma", "acme.com, x", 8, false},
-		{"hyphen then label", "acme.com-b", 8, true},
-		{"hyphen then space", "acme.com- ", 8, false},
+		{"end of text", "acme.com", 0, 8, false},
+		{"longer label", "acme.community", 0, 8, true},
+		{"longer name", "acme.com.br", 0, 8, true},
+		{"trailing dot", "acme.com.", 0, 8, false},
+		{"sentence end", "visit acme.com. next", 6, 14, false},
+		{"path", "acme.com/x", 0, 8, false},
+		{"port", "acme.com:443", 0, 8, false},
+		{"comma", "acme.com, x", 0, 8, false},
+		{"hyphen then label", "acme.com-b", 0, 8, true},
+		{"hyphen then space", "acme.com- ", 0, 8, false},
+		// A file extension is not another host, so the name before it is the
+		// whole host and has to be rewritten.
+		{"file extension", "acme.com.txt", 0, 8, false},
+		{"capture file", "acme.com.pcap", 0, 8, false},
+		{"extension mid sentence", "cat acme.com.log now", 4, 12, false},
+		{"two extensions", "acme.com.tar.gz", 0, 8, false},
+		{"country second level", "acme.com.au", 0, 8, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := domainContinues(tt.text, tt.i); got != tt.want {
-				t.Errorf("domainContinues(%q, %d) = %v, want %v", tt.text, tt.i, got, tt.want)
+			if got := domainContinues(tt.text, tt.start, tt.i); got != tt.want {
+				t.Errorf("domainContinues(%q, %d, %d) = %v, want %v", tt.text, tt.start, tt.i, got, tt.want)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package tanuki
 
 import (
 	"sort"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -215,20 +216,52 @@ func isLabelByte(b byte) bool {
 	}
 }
 
-// domainContinues reports whether the text at i carries on a hostname, so the
-// match ending there is only a prefix of a longer name.
-func domainContinues(text string, i int) bool {
+// domainContinues reports whether the hostname matched up to i carries on into
+// a longer name, so the match is only a prefix of a different host.
+//
+// A dot is the hard case: "acme.com.br" and "acme.community" are other hosts,
+// while "acme.com.txt" is a file named after one. Telling them apart by eye is
+// what leaked -- every dot counted as a continuation, so a target with a file
+// extension after it was left for the org rule, which rewrote the registrable
+// name and left the subdomain label in clear ("bounty.acme.com.txt"). The
+// whole token decides instead: it carries on only when it is itself a domain.
+func domainContinues(text string, start, i int) bool {
 	if i >= len(text) {
 		return false
 	}
 
-	if b := text[i]; b == '.' || b == '-' {
+	b := text[i]
+
+	switch {
+	case b == '-':
 		// A separator continues the name only when a label follows it, so
-		// "amazon.com." at the end of a sentence is still the whole host.
+		// "acme.com-" at the end of a word is still the whole host.
 		return i+1 < len(text) && isLabelByte(text[i+1])
+	case b != '.':
+		return isLabelByte(b)
+	case i+1 >= len(text) || !isLabelByte(text[i+1]):
+		// "acme.com." at the end of a sentence is still the whole host.
+		return false
 	}
 
-	return isLabelByte(text[i])
+	return isRealDomain(hostToken(text, start, i))
+}
+
+// hostToken returns the whole hostname-shaped run starting at start, which
+// reaches past i through any further labels.
+func hostToken(text string, start, i int) string {
+	end := i
+
+	for end < len(text) && (isLabelByte(text[end]) || text[end] == '.') {
+		end++
+	}
+
+	// A trailing dot is punctuation, not a label.
+	for end > i && text[end-1] == '.' {
+		end--
+	}
+
+	return strings.ToLower(text[start:end])
 }
 
 // addressContinues reports whether the byte at i could carry on an IP
@@ -280,7 +313,7 @@ func (m *acMachine) isBounded(text string, match acMatch) bool {
 
 	switch m.bounds[match.index] {
 	case boundHost:
-		return !domainContinues(text, match.end)
+		return !domainContinues(text, match.start, match.end)
 	case boundWord:
 		return wordEdge(text, match.start) && wordEdge(text, match.end)
 	case boundAddress:

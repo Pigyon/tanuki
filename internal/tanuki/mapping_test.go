@@ -256,6 +256,52 @@ func TestUnmappedSubdomainLabelDoesNotLeak(t *testing.T) {
 
 // TestExplicitSubdomainBeatsWildcard ensures the wildcard does not swallow a
 // subdomain that has its own mapping, which would break round-tripping.
+// TestTargetWithAFileExtensionDoesNotLeak: a hostname written with a file
+// extension after it ("bounty.acme.com.txt") matched no wildcard and was
+// refused by the exact pass, so only the org rule fired. That rewrote the
+// registrable name and left the subdomain label upstream in clear.
+func TestTargetWithAFileExtensionDoesNotLeak(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain, testSubDomain)
+	r2f, _ := rewriters(t, engDir)
+
+	leaky := []string{
+		"cat " + testSubDomain + ".txt",
+		"ls internal-admin." + testBaseDomain + ".har",
+		"scp report." + testBaseDomain + ".pcap host:/tmp",
+		"open " + testBaseDomain + ".log",
+	}
+
+	for _, in := range leaky {
+		got := r2f.rewrite(in)
+
+		for _, real := range []string{testOrgName, "bounty", "internal-admin"} {
+			if strings.Contains(strings.ToLower(got), real) {
+				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, real)
+			}
+		}
+	}
+
+	// The extension itself stays, and a genuinely different host is untouched.
+	if got := r2f.rewrite(testSubDomain + ".txt"); !strings.HasSuffix(got, ".txt") {
+		t.Errorf("extension was swallowed: %q", got)
+	}
+
+	// A genuinely different host keeps its shape: the org rule still replaces
+	// the bare label, but no hostname mapping is applied across it.
+	for _, other := range []string{"amazon.community", "amazon.com.br"} {
+		got := r2f.rewrite(other)
+		if !strings.HasSuffix(got, strings.TrimPrefix(other, testOrgName)) {
+			t.Errorf("unrelated host %q lost its shape: %q", other, got)
+		}
+
+		if strings.Contains(got, testFictionBase) || strings.Contains(got, testFictionWildcard) {
+			t.Errorf("hostname mapping fired across %q: %q", other, got)
+		}
+	}
+}
+
 func TestExplicitSubdomainBeatsWildcard(t *testing.T) {
 	t.Parallel()
 

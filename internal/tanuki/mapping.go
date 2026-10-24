@@ -516,7 +516,9 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	for _, loc := range locs {
 		// Compare lowercased so "API.AMAZON.COM" is caught before the exact
 		// pass rewrites its base and leaks the "API" label.
-		fiction, ok := rw.wildcardFiction(strings.ToLower(text[loc[0]:loc[1]]))
+		host := strings.ToLower(text[loc[0]:loc[1]])
+
+		fiction, n, ok := rw.wildcardPrefix(host)
 		if !ok {
 			continue
 		}
@@ -524,7 +526,7 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 		b.WriteString(text[pos:loc[0]])
 		b.WriteString(fiction)
 
-		pos = loc[1]
+		pos = loc[0] + n
 	}
 
 	if pos == 0 {
@@ -534,6 +536,25 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	b.WriteString(text[pos:])
 
 	return b.String()
+}
+
+// wildcardPrefix returns the fiction covering host, and how much of host it
+// covers. host must already be lowercased.
+//
+// Each whole-label prefix is tried, longest first, so a target carrying a file
+// extension ("bounty.acme.com.txt") is covered up to the hostname and the
+// extension is left alone. Without that the token matched no wildcard at all,
+// and the subdomain label went upstream beside the rewritten base name.
+// Splitting on labels is what keeps this safe: "acme.com" is not a prefix of
+// "acme.community", so an unrelated name is still never touched.
+func (rw *rewriter) wildcardPrefix(host string) (fiction string, n int, ok bool) {
+	for end := len(host); end > 0; end = strings.LastIndexByte(host[:end], '.') {
+		if f, hit := rw.wildcardFiction(host[:end]); hit {
+			return f, end, true
+		}
+	}
+
+	return "", 0, false
 }
 
 // wildcardFiction returns the fiction covering host, which must already be
