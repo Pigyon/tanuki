@@ -127,8 +127,18 @@ jobs:
         run: |
           printf 'contact security@unmapped-target.io at 93.184.216.34\n' > /tmp/report.md
           status=0
-          docker run --rm -v tanuki-ci:/data -v /tmp/report.md:/r.md:ro tanuki:ci verify /r.md || status=$?
+          docker run --rm -v tanuki-ci:/data -v /tmp/report.md:/r.md:ro tanuki:ci verify /r.md \
+            > /tmp/verify.txt 2>&1 || status=$?
+          cat /tmp/verify.txt
           if [ "$status" -eq 0 ]; then
             echo "::error::verify passed a report holding unmapped targets"
             exit 1
           fi
+          # A non-zero exit alone proves nothing: a crash or "no engagement"
+          # would pass this step too. Both values have to be named.
+          for want in unmapped-target.io 93.184.216.34; do
+            grep -qF "$want" /tmp/verify.txt || {
+              echo "::error::verify did not report $want"
+              exit 1
+            }
+          done
