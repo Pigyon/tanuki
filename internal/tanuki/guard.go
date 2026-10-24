@@ -1,8 +1,6 @@
 package tanuki
 
 import (
-	"errors"
-	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -185,27 +183,38 @@ func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, err
 	found := findNewTargets(engDir, texts, extraIgnored...)
 	sc := loadScope(engDir)
 
-	var err error
+	mapped := 0
 
 	for _, domain := range found.domains {
-		if addErr := mapOneDomain(engDir, sc, domain); addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
-		}
+		mapped += logMapFailure("domain", domain, mapOneDomain(engDir, sc, domain))
 	}
 
 	for _, ip := range found.ips {
-		if addErr := addIPMapping(engDir, ip); addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping IP %s: %w", ip, addErr))
-		}
+		mapped += logMapFailure("ip", ip, addIPMapping(engDir, ip))
 	}
 
 	for _, id := range found.accounts {
-		if addErr := addAccountMapping(engDir, id); addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping account %s: %w", id, addErr))
-		}
+		mapped += logMapFailure("account", id, addAccountMapping(engDir, id))
 	}
 
-	return len(found.domains) + len(found.ips) + len(found.accounts), err
+	return mapped, nil
+}
+
+// logMapFailure records that one value could not be mapped and reports whether
+// it was, so one bad value cannot refuse the whole body.
+//
+// The error is logged, never returned: it names the value, and the refusal it
+// would cause is shown to the client, which folds the text into its next
+// prompt and sends the real value upstream that way. A value that truly is in
+// the body and unmapped is still caught by the gate, which reports counts.
+func logMapFailure(kind, value string, err error) int {
+	if err == nil {
+		return 1
+	}
+
+	logger.Warn("could not map a detected value", "kind", kind, "value", value, "error", err)
+
+	return 0
 }
 
 // mapOneDomain maps a detected domain, falling back to a hostname-only

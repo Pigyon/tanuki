@@ -474,13 +474,13 @@ func TestShortOrgInsideItsFictionIsAllowed(t *testing.T) {
 
 // TestAllocationRefusesWhenItCannotLock: the lock used to log a warning and
 // return a no-op release when it could not be taken, so callers allocated
-// unserialised -- the duplicate-fiction bug the lock exists to prevent. Under
-// contention that produced several conflicting mapping sets for one target,
-// each with its own port and org number, leaving the reverse pass ambiguous.
+// unserialised -- the duplicate-fiction bug the lock exists to prevent.
+//
+// Nothing may be written, and the body must still be refused. The refusal now
+// comes from the gate rather than from the mapping step, because a mapping
+// error names the value and would reach the client.
 func TestAllocationRefusesWhenItCannotLock(t *testing.T) {
-	t.Parallel()
-
-	engDir := newTestEngagement(t)
+	engDir := proxyEngagement(t)
 
 	// A lock path that cannot be opened as a file.
 	if err := os.MkdirAll(filepath.Join(engDir, "allocate.lock"), 0o750); err != nil {
@@ -489,29 +489,29 @@ func TestAllocationRefusesWhenItCannotLock(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	failures := make(chan struct{}, 16)
-
 	for range 16 {
 		wg.Add(1)
 
 		go func() {
 			defer wg.Done()
 
-			if _, err := mapTargets(engDir, nil, "scan newtarget.com"); err != nil {
-				failures <- struct{}{}
-			}
+			_, _ = mapTargets(engDir, nil, "scan newtarget.com")
 		}()
 	}
 
 	wg.Wait()
-	close(failures)
-
-	if len(failures) != 16 {
-		t.Errorf("%d of 16 allocations refused, want all of them", len(failures))
-	}
 
 	if got := loadMappings(engDir); len(got) != 0 {
 		t.Errorf("an unserialised allocation wrote %d mappings: %+v", len(got), got)
+	}
+
+	_, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":"scan newtarget.com"}]}`))
+	if err == nil {
+		t.Error("the body was forwarded although the target could not be mapped")
+	}
+
+	if err != nil && strings.Contains(err.Error(), "newtarget.com") {
+		t.Errorf("the refusal names the real value: %v", err)
 	}
 }
 

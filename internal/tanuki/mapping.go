@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -1332,8 +1334,41 @@ func isPrivateIP(ip string) bool {
 		return true
 	}
 
-	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
-		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast()
+	if parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() ||
+		parsed.IsMulticast() || parsed.IsInterfaceLocalMulticast() {
+		return true
+	}
+
+	return isSpecialPurposeV4(parsed)
+}
+
+// cgnatRange is RFC 6598 shared address space, which is carrier equipment
+// rather than a target.
+var cgnatRange = net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// isSpecialPurposeV4 rejects addresses that are never a host anyone tests: the
+// all-ones broadcast, a netmask, and shared address space. A netmask next to
+// an address in ifconfig output was being mapped, so the subnet the model
+// needs to reason about came back as 127.0.0.4.
+func isSpecialPurposeV4(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+
+	if v4.Equal(net.IPv4bcast) || cgnatRange.Contains(v4) || v4[0] >= 240 {
+		return true
+	}
+
+	// A contiguous run of high bits then zeros is a mask, not an address.
+	return isContiguousMask(v4)
+}
+
+func isContiguousMask(v4 net.IP) bool {
+	ones, bits := net.IPMask(v4).Size()
+
+	return bits == 32 && ones > 0 && ones < 32
 }
 
 // accountRegexes find AWS account IDs where the context says a twelve-digit
@@ -1507,22 +1542,34 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 // (AssemblyVersion, FileVersion) still count.
 func precededByVersion(text string, i int) bool {
 	end := i
-	for end > 0 && strings.ContainsRune(" \t\"'>=:", rune(text[end-1])) {
+	for end > 0 && strings.ContainsRune(" \t\"'>=:.,/(-", rune(text[end-1])) {
 		end--
 	}
 
 	start := end
-	for start > 0 && isASCIILetterByte(text[start-1]) {
-		start--
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(text[:start])
+		if !unicode.IsLetter(r) {
+			break
+		}
+
+		start -= size
 	}
 
 	word := strings.ToLower(text[start:end])
 
-	return word == "ver" || strings.HasSuffix(word, "version")
+	return notAnAddressWords[word] || strings.HasSuffix(word, "version")
 }
 
-func isASCIILetterByte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+// notAnAddressWords introduce a dotted quad that is not a host: a version, or
+// a piece of subnet configuration. "broadcast 192.0.2.255" and
+// "netmask 255.255.255.0" are the shape ifconfig and ip addr print, and
+// mapping them destroys the subnet the model has to reason about.
+var notAnAddressWords = map[string]bool{
+	"ver": true, "v": true, "release": true, "kernel": true, "build": true,
+	"assembly": true, "revision": true, "rev": true, "версия": true,
+	"netmask": true, "mask": true, "genmask": true, "broadcast": true,
+	"bcast": true,
 }
 
 // isHardwareAddress reports whether raw is a MAC or Fibre Channel WWN rather
@@ -1547,6 +1594,18 @@ func isHardwareAddress(raw string) bool {
 	}
 
 	return true
+}
+
+// startsMidWord reports whether i falls inside a word, which the leading \b
+// used to rule out for ASCII only.
+func startsMidWord(text string, i int) bool {
+	if i == 0 {
+		return false
+	}
+
+	r, _ := utf8.DecodeLastRuneInString(text[:i])
+
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func isAlnumByte(b byte) bool {
@@ -1621,7 +1680,14 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 	return b.String()
 }
 
-var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
+// domainRegex matches a hostname. Labels take Unicode letters so an
+// internationalised name is matched whole: an ASCII-only class entered
+// "münchen.de" after the non-ASCII rune and detected "nchen.de", which mapped
+// the wrong name and left "mü" in the rewritten text.
+//
+// There is no leading \b: Go's is ASCII-only, so it never fires before a label
+// like "例え". startsMidWord does that job for every script.
+var domainRegex = regexp.MustCompile(`([\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+\p{L}{2,}\b`)
 
 func hasCommonTLD(domain string) bool {
 	parts := strings.Split(domain, ".")
@@ -1788,6 +1854,10 @@ func scanTargets(text string) scanned {
 	seen := make(map[string]bool)
 
 	for _, loc := range domainRegex.FindAllStringIndex(text, -1) {
+		if startsMidWord(text, loc[0]) {
+			continue
+		}
+
 		domain := hostInMatch(text, loc[0], loc[1])
 		if domain == "" || seen[domain] {
 			continue
