@@ -282,7 +282,7 @@ Set in `compose.yaml`:
 | `TANUKI_PROXY_PORT`  | `18080`                     | Proxy listen port                                        |
 | `TANUKI_PORT_START`  | `9000`                      | Starting port for domain assignments                     |
 | `TANUKI_UPSTREAM`    | `https://api.anthropic.com` | Upstream API URL                                         |
-| `TANUKI_FICTION_ORG` | `DEVTARGET`                 | Fiction org name for mappings                            |
+| `TANUKI_FICTION_ORG` | `DEVTARGET`                 | Fiction org name for mappings. At least 4 characters, no whitespace, and not a public suffix: the gate recognises tanuki's own output by this name, so a value like `com` would switch it off |
 | `TANUKI_DOMAINS`     | _(none)_                    | Comma-separated domains to pre-seed                      |
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
 | `TANUKI_SCOPE`       | _(none)_                    | Comma-separated in-scope domains (subdomains included). Empty means every detected domain is a target |

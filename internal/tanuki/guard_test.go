@@ -491,3 +491,39 @@ func TestForgedOperatorEmailCannotExemptATarget(t *testing.T) {
 		}
 	}
 }
+
+// TestOwnFictionOnlyMatchesTheFirstLabel: isOwnFiction suppressed a residual
+// when any of its labels matched a fiction org, so a fiction org named after a
+// common suffix switched the gate off for every value ending in it.
+func TestOwnFictionOnlyMatchesTheFirstLabel(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, _ := rewriters(t, engDir)
+
+	if !r2f.isOwnFiction("devtarget.com.br") || !r2f.isOwnFiction("localhost:9000") {
+		t.Error("tanuki's own output was not recognised")
+	}
+
+	for _, real := range []string{"secret-target.com", "internal.victim.com", "a.devtarget.io"} {
+		if r2f.isOwnFiction(real) {
+			t.Errorf("%q was suppressed as tanuki's own output", real)
+		}
+	}
+}
+
+func TestFictionOrgIsValidated(t *testing.T) {
+	t.Parallel()
+
+	for _, bad := range []string{"com", "co.uk", "localhost", "DEV|T", "DEV T", "ab", ""} {
+		if err := validateFictionOrg(bad); err == nil {
+			t.Errorf("validateFictionOrg(%q) accepted it", bad)
+		}
+	}
+
+	for _, good := range []string{"DEVTARGET", "SAFECORP", "ACMECORP"} {
+		if err := validateFictionOrg(good); err != nil {
+			t.Errorf("validateFictionOrg(%q) = %v", good, err)
+		}
+	}
+}

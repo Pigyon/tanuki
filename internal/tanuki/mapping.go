@@ -524,15 +524,16 @@ func fictionLabelsOf(mappings []mappingEntry) map[string]bool {
 // as "DEVTARGET.com.br", which the recognisers then read as a real domain --
 // and the gate refused the body, naming a fiction string as the leak.
 func (rw *rewriter) isOwnFiction(value string) bool {
-	for _, label := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+	labels := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
 		return r == '.' || r == ':'
-	}) {
-		if rw.fictionLabels[label] {
-			return true
-		}
-	}
+	})
 
-	return false
+	// Only the first label is tanuki's: its own output reads
+	// "DEVTARGET.com.br" or "localhost:9000", fiction first and whatever the
+	// rewrite left behind after it. Matching any label meant a fiction org
+	// named after a common suffix -- TANUKI_FICTION_ORG=com -- suppressed
+	// every real ".com" residual and turned the gate off.
+	return len(labels) > 0 && rw.fictionLabels[labels[0]]
 }
 
 // survivors returns the mapped org names and custom-rule values still in text
@@ -970,6 +971,31 @@ func usedCounters(m mappingEntry) map[string]int {
 	}
 
 	return used
+}
+
+// minFictionOrgLen keeps a fiction org from being a fragment that appears
+// everywhere; it is also the first label of every residual tanuki suppresses.
+const minFictionOrgLen = 4
+
+// validateFictionOrg rejects a name that cannot safely stand in for an org:
+// one the line format cannot carry, one short enough to collide with ordinary
+// words, or a public suffix, which would make the gate ignore every residual
+// ending in it.
+func validateFictionOrg(name string) error {
+	switch {
+	case len(name) < minFictionOrgLen:
+		return fmt.Errorf("fiction org %q is too short (need %d characters)", name, minFictionOrgLen)
+	case strings.ContainsAny(name, "|\r\n"), strings.ContainsAny(name, " \t"):
+		return fmt.Errorf("fiction org %q contains whitespace, \"|\" or a line break", name)
+	case strings.EqualFold(name, "localhost"):
+		return fmt.Errorf("fiction org %q is the host every fiction address uses", name)
+	}
+
+	if suffix, icann := publicsuffix.PublicSuffix(strings.ToLower(name)); icann && suffix == strings.ToLower(name) {
+		return fmt.Errorf("fiction org %q is a public suffix", name)
+	}
+
+	return nil
 }
 
 func resolveFictionOrg(engDir, fictionOrg string) string {
