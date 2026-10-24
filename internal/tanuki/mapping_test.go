@@ -467,7 +467,7 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 		"https://portal.acme.in/login",
 		"see shop.acme.it/cart",
 		"mail admin@acme.pl today",
-		"connect to acme.app:8443",
+		"connect to acme.app:8443/health",
 		"//cdn.acme.pizza/asset.js",
 	}
 
@@ -481,6 +481,7 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 // TestUncommonTLDsStayFilteredAsBareTokens: an attribute access spells a real
 // TLD often enough (.id, .in, .it, .so) that a bare token on one must not be
 // taken for a domain, or the org rule then rewrites that word everywhere.
+// A file:line reference is the same shape, and dev output is full of them.
 func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
 	t.Parallel()
 
@@ -490,6 +491,9 @@ func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
 		"item.data.id", "req.session.id", "for x in list.in",
 		"self.config.ini", "value.as", "promise.so",
 		"readme.md", "config.yaml", "main.go", "styles.css",
+		// .md, .py, .rs, .sh and .pl are all real TLDs.
+		"README.md:3", "src/main.rs:118: warning", "handlers.py:91",
+		"./scripts/deploy.sh:42: command not found", "lib.pl:7",
 	}
 
 	for _, text := range code {

@@ -1293,9 +1293,9 @@ func isRealDomain(domain string) bool {
 }
 
 // hostContext reports whether text[start:end] sits where only a hostname
-// does: after "://" or "@", or with a path or port right after it. A bare
-// token on an uncommon TLD is far more often code than a domain, so it needs
-// one of these markers.
+// does: after "://" or "@", or with a path right after it. A bare token on an
+// uncommon TLD is far more often code than a domain, so it needs one of these
+// markers.
 func hostContext(text string, start, end int) bool {
 	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
 		return true
@@ -1309,10 +1309,28 @@ func hostContext(text string, start, end int) bool {
 	case '/':
 		return true
 	case ':':
-		return end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9'
+		return portThenPath(text, end+1)
 	default:
 		return false
 	}
+}
+
+// portThenPath reports whether text from i is a port followed by a path. The
+// path is what makes it a port: ".md", ".py", ".rs" and ".sh" are real TLDs,
+// so "README.md:3" and "handlers.py:91" are hostname-and-port by every other
+// measure, and dev output is full of them.
+func portThenPath(text string, i int) bool {
+	digits := 0
+
+	for i+digits < len(text) && digits <= 5 {
+		if text[i+digits] < '0' || text[i+digits] > '9' {
+			break
+		}
+
+		digits++
+	}
+
+	return digits > 0 && digits <= 5 && i+digits < len(text) && text[i+digits] == '/'
 }
 
 // scanned is what scanTargets found in one string.

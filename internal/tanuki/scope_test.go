@@ -139,3 +139,61 @@ func TestScopeRejectsValuesThatBreakTheFile(t *testing.T) {
 		}
 	}
 }
+
+// TestContextDetectedDomainGetsNoOrgRule: recognising any real TLD by its
+// surroundings made weak guesses into full targets. ".md", ".py", ".rs" and
+// ".sh" are real TLDs, so dev output turned file references into orgs --
+// "func main()" became "func DEVTARGET()" -- and one acme.com.community URL
+// derived an org for "com", rewriting the word everywhere.
+func TestContextDetectedDomainGetsNoOrgRule(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := mapTargets(engDir, nil,
+		"src/main.rs:118 README.md:3 docs.rs/serde https://acme.com.community/ bounty.acme.com"); err != nil {
+		t.Fatalf("mapTargets: %v", err)
+	}
+
+	for _, m := range loadMappings(engDir) {
+		if m.Type == mapDomain || m.Type == mapWildcard {
+			continue
+		}
+
+		// Only the common-TLD target earns a derived mapping.
+		if !strings.Contains(m.Real, "acme") || strings.Contains(m.Real, "community") {
+			t.Errorf("a weakly detected domain earned %s|%s|%s", m.Type, m.Real, m.Fiction)
+		}
+	}
+
+	r2f, _ := rewriters(t, engDir)
+
+	for _, code := range []string{
+		"func main() {}", "git merge origin/main", "README section",
+		"github.com", "the docs say", "dot com", "import test",
+	} {
+		if got := r2f.rewrite(code); got != code {
+			t.Errorf("rewrite corrupted code: %q -> %q", code, got)
+		}
+	}
+}
+
+// TestScopeStillMapsAnUncommonTLDInFull: the common-TLD rule stands in for a
+// scope, so once a scope exists the operator's word is what counts.
+func TestScopeStillMapsAnUncommonTLDInFull(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := addToScope(engDir, "acme.in"); err != nil {
+		t.Fatalf("addToScope: %v", err)
+	}
+
+	if _, err := mapTargets(engDir, nil, "visit https://portal.acme.in/login"); err != nil {
+		t.Fatalf("mapTargets: %v", err)
+	}
+
+	if !slices.ContainsFunc(loadMappings(engDir), func(m mappingEntry) bool { return m.Type == mapOrg }) {
+		t.Error("an in-scope target on an uncommon TLD got no org mapping")
+	}
+}

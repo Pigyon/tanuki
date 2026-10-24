@@ -64,8 +64,19 @@ func (s scope) covers(domain string) bool {
 }
 
 // isTarget reports whether a detected domain earns the derived mappings.
+//
+// With no scope set, a common TLD stands in for one: that is every domain
+// detection used to find, so an engagement without a scope behaves as before.
+// A domain recognised only by its context -- any real TLD after "://", after
+// "@" or before a path -- is hidden but gets no org rule, because an org rule
+// rewrites a bare word everywhere and that guess is too weak to spend one on.
+// "tanuki add" and an explicit scope entry both still map in full.
 func (s scope) isTarget(domain string) bool {
-	return len(s) == 0 || s.covers(domain)
+	if len(s) == 0 {
+		return hasCommonTLD(domain)
+	}
+
+	return s.covers(domain)
 }
 
 // addToScope appends a pattern unless it is already covered, and reports
