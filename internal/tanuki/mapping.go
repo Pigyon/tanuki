@@ -1174,6 +1174,42 @@ func hasCommonTLD(domain string) bool {
 	return commonTLDs[strings.ToLower(parts[len(parts)-1])]
 }
 
+// isRealDomain reports whether domain ends in an ICANN-managed public suffix
+// (.in, .it, .app, ...), with a label in front of it. The curated TLD list is
+// the filter for a bare token; this is the broader test used only where the
+// surroundings already say the token is a host (see hostContext). It accepts
+// every real TLD without accepting code like "config.yaml" or "main.go", whose
+// final element is not a public suffix at all.
+func isRealDomain(domain string) bool {
+	suffix, icann := publicsuffix.PublicSuffix(domain)
+
+	return icann && len(suffix) < len(domain)
+}
+
+// hostContext reports whether text[start:end] sits where only a hostname does:
+// right after a URL scheme ("https://host") or an "@" ("user@host"), or with a
+// path or port right after it ("host/path", "host:443"). A bare token on an
+// uncommon TLD, which is far more often code than a domain, is deliberately
+// not enough; one of these markers is.
+func hostContext(text string, start, end int) bool {
+	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
+		return true
+	}
+
+	if end >= len(text) {
+		return false
+	}
+
+	switch text[end] {
+	case '/':
+		return true
+	case ':':
+		return end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9'
+	default:
+		return false
+	}
+}
+
 // scanned is what scanTargets found in one string.
 type scanned struct{ domains, ips, accounts []string }
 
@@ -1193,8 +1229,15 @@ func scanTargets(text string) scanned {
 
 	seen := make(map[string]bool)
 
-	for _, raw := range domainRegex.FindAllString(text, -1) {
-		if domain := strings.ToLower(raw); hasCommonTLD(domain) && !seen[domain] {
+	for _, loc := range domainRegex.FindAllStringIndex(text, -1) {
+		domain := strings.ToLower(text[loc[0]:loc[1]])
+		if seen[domain] {
+			continue
+		}
+
+		// A common TLD stands on its own; any other real TLD needs the
+		// surroundings to say the token is a host, not an attribute access.
+		if hasCommonTLD(domain) || (isRealDomain(domain) && hostContext(text, loc[0], loc[1])) {
 			seen[domain] = true
 			s.domains = append(s.domains, domain)
 		}

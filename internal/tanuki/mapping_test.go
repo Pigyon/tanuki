@@ -402,6 +402,51 @@ func TestTLDDetectionAvoidsCodePatterns(t *testing.T) {
 // TestFindNewDomainsDetectsApexDomains is a regression test: a prompt
 // mentioning only a bare apex domain used to produce no mapping at all,
 // so the real domain was sent to the upstream API unrewritten.
+// TestRealTLDsDetectedInHostContext: the curated TLD list left real domains
+// on uncommon TLDs (.in, .it, .pl, .app) undetected, so they went upstream in
+// clear. Where the surroundings say the token is a host, any ICANN suffix is
+// enough.
+func TestRealTLDsDetectedInHostContext(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	hosts := []string{
+		"https://portal.acme.in/login",
+		"see shop.acme.it/cart",
+		"mail admin@acme.pl today",
+		"connect to acme.app:8443",
+		"//cdn.acme.pizza/asset.js",
+	}
+
+	for _, text := range hosts {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
+// TestUncommonTLDsStayFilteredAsBareTokens: an attribute access spells a real
+// TLD often enough (.id, .in, .it, .so) that a bare token on one must not be
+// taken for a domain, or the org rule then rewrites that word everywhere.
+func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	code := []string{
+		"item.data.id", "req.session.id", "for x in list.in",
+		"self.config.ini", "value.as", "promise.so",
+		"readme.md", "config.yaml", "main.go", "styles.css",
+	}
+
+	for _, text := range code {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
 func TestFindNewDomainsDetectsApexDomains(t *testing.T) {
 	t.Parallel()
 
