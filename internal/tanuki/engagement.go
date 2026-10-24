@@ -35,15 +35,21 @@ func seedEnvDomains(engDir, domains string) error {
 
 	for _, d := range strings.Split(domains, ",") {
 		d = strings.TrimSpace(d)
-		if d == "" || mappingExists(engDir, "domain", extractBaseDomain(d)) {
+		if d == "" {
 			continue
 		}
+
+		// addDomain is idempotent and decides per mapping. A pre-check on the
+		// base domain used to skip a subdomain whose apex was already mapped.
+		before := len(loadMappings(engDir))
 
 		if err := addDomain(engDir, d, ""); err != nil {
 			return err
 		}
 
-		logger.Info("pre-seeded domain from env", "domain", d)
+		if len(loadMappings(engDir)) > before {
+			logger.Info("pre-seeded domain from env", "domain", d)
+		}
 	}
 
 	return nil

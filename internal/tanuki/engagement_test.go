@@ -292,3 +292,31 @@ func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 		t.Errorf("atomic write left temp files: %v", leftovers)
 	}
 }
+
+// TestEnvSeedsSubdomains: a subdomain in TANUKI_DOMAINS was skipped whenever
+// its apex was already mapped, which the documented example asks for.
+func TestEnvSeedsSubdomains(t *testing.T) {
+	engDir := proxyEngagement(t)
+	t.Setenv("TANUKI_DOMAINS", "Example.COM, api.example.com")
+
+	if err := loadEnvConfig(engDir); err != nil {
+		t.Fatalf("loadEnvConfig: %v", err)
+	}
+
+	for _, want := range []string{"example.com", "api.example.com"} {
+		if !mappingExists(engDir, "domain", want) {
+			t.Errorf("%s was not seeded", want)
+		}
+	}
+
+	// A second start must not re-announce what is already mapped.
+	before := loadMappings(engDir)
+
+	if err := loadEnvConfig(engDir); err != nil {
+		t.Fatalf("second loadEnvConfig: %v", err)
+	}
+
+	if after := loadMappings(engDir); len(after) != len(before) {
+		t.Errorf("restart changed the table: %d -> %d mappings", len(before), len(after))
+	}
+}
