@@ -236,6 +236,20 @@ func parseMappings(data, engDir string) []mappingEntry {
 }
 
 func newRewriter(mappings []mappingEntry, direction string) *rewriter {
+	return newRewriterEscaping(mappings, direction, nil)
+}
+
+func noEscape(s string) string { return s }
+
+// newRewriterEscaping builds a rewriter whose replacements are put through
+// escape. It exists for text that is itself inside a JSON string, where a real
+// value carrying a quote or a backslash has to be escaped as it is inserted or
+// the result stops being the JSON it is a fragment of.
+func newRewriterEscaping(mappings []mappingEntry, direction string, escape func(string) string) *rewriter {
+	if escape == nil {
+		escape = noEscape
+	}
+
 	rw := &rewriter{
 		explicit:   make(map[string]bool, len(mappings)),
 		ipFictions: map[string]string{},
@@ -280,7 +294,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 			}
 
 		case m.Type == mapOrg:
-			orgRules = append(orgRules, orgRule(m, direction))
+			orgRules = append(orgRules, orgRule(m, direction, escape))
 
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
@@ -290,7 +304,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 
 		default:
 			patterns = append(patterns, m.Fiction)
-			replacements = append(replacements, m.Real)
+			replacements = append(replacements, escape(m.Real))
 			bounds = append(bounds, mappingBound(m.Type))
 		}
 	}
@@ -378,12 +392,12 @@ func mappingBound(typ string) boundKind {
 const minOrgPartLen = 4
 
 // orgRule orients an org mapping for the given direction.
-func orgRule(m mappingEntry, direction string) termEntry {
+func orgRule(m mappingEntry, direction string, escape func(string) string) termEntry {
 	if direction == directionR2F {
 		return termEntry{From: m.Real, To: m.Fiction}
 	}
 
-	return termEntry{From: m.Fiction, To: m.Real}
+	return termEntry{From: m.Fiction, To: escape(m.Real)}
 }
 
 // newOrgMachine matches org names as words, or as parts of an identifier
@@ -463,7 +477,7 @@ func newResidueMachine(mappings []mappingEntry) *acMachine {
 	for _, m := range mappings {
 		switch m.Type {
 		case mapOrg:
-			orgRules = append(orgRules, orgRule(m, directionR2F))
+			orgRules = append(orgRules, orgRule(m, directionR2F, noEscape))
 		case mapCustom:
 			custom = append(custom, m.Real)
 		}

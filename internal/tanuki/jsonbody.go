@@ -256,3 +256,14 @@ func reverseSSEEvent(event string, rw *rewriter) string {
 
 	return strings.Join(lines, "")
 }
+
+// jsonStringInterior returns s as it appears between the quotes of a JSON
+// string, so a value inserted into a JSON fragment keeps the fragment valid.
+func jsonStringInterior(s string) string {
+	quoted, err := encodeJSON(s)
+	if err != nil || len(quoted) < 2 {
+		return s
+	}
+
+	return string(quoted[1 : len(quoted)-1])
+}

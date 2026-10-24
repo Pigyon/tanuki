@@ -12,6 +12,7 @@ type rewriterCache struct {
 	mappings    []mappingEntry
 	r2f         *rewriter
 	f2r         *rewriter
+	f2rJSON     *rewriter
 	loadErr     error
 	lastModTime int64
 }
@@ -55,9 +56,11 @@ func (c *rewriterCache) rewriterOrError(engDir, direction string) (*rewriter, er
 	if len(c.mappings) > 0 {
 		c.r2f = newRewriter(c.mappings, directionR2F)
 		c.f2r = newRewriter(c.mappings, directionF2R)
+		c.f2rJSON = newRewriterEscaping(c.mappings, directionF2R, jsonStringInterior)
 	} else {
 		c.r2f = nil
 		c.f2r = nil
+		c.f2rJSON = nil
 	}
 
 	// Never cache a read error: stat can succeed while the read fails, and a
@@ -84,6 +87,18 @@ func (c *rewriterCache) pick(direction string) *rewriter {
 	}
 
 	return c.f2r
+}
+
+// jsonRewriter returns the reverse rewriter for text inside a JSON string.
+func (c *rewriterCache) jsonRewriter(engDir string) *rewriter {
+	if _, err := c.rewriterOrError(engDir, directionF2R); err != nil {
+		return nil
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.f2rJSON
 }
 
 // invalidate drops the cached rewriters so the next lookup rebuilds them from

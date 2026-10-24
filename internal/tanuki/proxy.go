@@ -224,7 +224,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardRaw(w, resp.Body)
 	case isSSE:
 		w.WriteHeader(resp.StatusCode)
-		streamSSEWithRewrite(w, resp.Body, responseRewriter())
+		streamSSEWithRewrite(w, resp.Body, responseRewriter(), jsonResponseRewriter())
 	default:
 		forwardWithRewrite(w, resp, responseRewriter())
 	}
@@ -272,7 +272,12 @@ type sseSink struct {
 	w       io.Writer
 	flusher http.Flusher
 	rw      *rewriter
-	held    map[string]*heldDelta // by content block index
+	// rwJSON reverses into a JSON fragment, escaping each real value as it is
+	// inserted. input_json_delta carries a slice of the tool's argument JSON,
+	// so a value holding a quote or a backslash would otherwise end the string
+	// early and the accumulated arguments would not parse.
+	rwJSON *rewriter
+	held   map[string]*heldDelta // by content block index
 }
 
 // heldDelta is the unsent tail of one content block.
@@ -288,10 +293,10 @@ var deltaFields = map[string]string{
 	"input_json_delta": "partial_json",
 }
 
-func newSSESink(w http.ResponseWriter, rw *rewriter) *sseSink {
+func newSSESink(w http.ResponseWriter, rw, rwJSON *rewriter) *sseSink {
 	flusher, _ := w.(http.Flusher)
 
-	return &sseSink{w: w, flusher: flusher, rw: rw, held: map[string]*heldDelta{}}
+	return &sseSink{w: w, flusher: flusher, rw: rw, rwJSON: rwJSON, held: map[string]*heldDelta{}}
 }
 
 // write handles one complete event.
@@ -381,10 +386,15 @@ func (s *sseSink) releaseAll() {
 }
 
 func (s *sseSink) sendDelta(h *heldDelta, text string) {
+	rw := s.rw
+	if h.kind == "input_json_delta" && s.rwJSON != nil {
+		rw = s.rwJSON
+	}
+
 	data, err := encodeJSON(map[string]any{
 		typeKey: "content_block_delta",
 		"index": h.index,
-		"delta": map[string]any{typeKey: h.kind, deltaFields[h.kind]: s.rw.rewrite(text)},
+		"delta": map[string]any{typeKey: h.kind, deltaFields[h.kind]: rw.rewrite(text)},
 	})
 	if err != nil {
 		return
@@ -404,8 +414,8 @@ func (s *sseSink) send(event string) {
 }
 
 // streamSSEWithRewrite reverses fiction to real in a stream of SSE events.
-func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw *rewriter) {
-	sink := newSSESink(w, rw)
+func streamSSEWithRewrite(w http.ResponseWriter, body io.Reader, rw, rwJSON *rewriter) {
+	sink := newSSESink(w, rw, rwJSON)
 
 	var lineBuf bytes.Buffer
 
@@ -525,6 +535,16 @@ func responseRewriter() *rewriter {
 	}
 
 	return proxyCache.getRewriter(engagementDir(eng), directionF2R)
+}
+
+// jsonResponseRewriter reverses text that sits inside a JSON string.
+func jsonResponseRewriter() *rewriter {
+	eng := currentEngagement()
+	if eng == "" {
+		return nil
+	}
+
+	return proxyCache.jsonRewriter(engagementDir(eng))
 }
 
 // anonymizeUpstreamBody rewrites a body's real values to fiction before it
