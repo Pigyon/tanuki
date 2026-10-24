@@ -187,6 +187,45 @@ func TestOrgInProtocolFieldIsNotALeak(t *testing.T) {
 	}
 }
 
+// TestAWSAccountIDsAreMapped: an ARN carried the account ID upstream, and
+// cloud engagements are full of them.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestAWSAccountIDsAreMapped(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	const account = "123456789012"
+
+	body := []byte(`{"messages":[{"role":"user","content":"` +
+		`assume arn:aws:iam::` + account + `:role/admin, then` +
+		` {\"Account\": \"210987654321\"} and AWS_ACCOUNT_ID=345678901234;` +
+		` order 999999999999 is not an account"}]}`)
+
+	out, err := anonymizeUpstreamBody(body)
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	for _, id := range []string{account, "210987654321", "345678901234"} {
+		if strings.Contains(string(out), id) {
+			t.Errorf("account ID %s reached the upstream body: %s", id, out)
+		}
+	}
+
+	if !strings.Contains(string(out), "arn:aws:iam::000000000001:role/admin") {
+		t.Errorf("ARN lost its shape: %s", out)
+	}
+
+	if !strings.Contains(string(out), "999999999999") {
+		t.Errorf("a bare twelve-digit number was taken for an account: %s", out)
+	}
+
+	f2r := responseRewriter()
+	if back := f2r.rewrite("arn:aws:iam::000000000001:role/admin"); back != "arn:aws:iam::"+account+":role/admin" {
+		t.Errorf("account did not reverse: %q", back)
+	}
+}
+
 func TestOnLeakWarnForwardsAnyway(t *testing.T) {
 	proxyEngagement(t)
 	t.Setenv("TANUKI_ON_LEAK", onLeakWarn)

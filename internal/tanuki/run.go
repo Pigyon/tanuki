@@ -18,29 +18,30 @@ const (
 // commands maps each command name to its handler, which receives the args
 // following the command name.
 var commands = map[string]func(args []string){
-	"init":      cmdInit,
-	"add":       cmdAdd,
-	"add-ip":    cmdAddIP,
-	"add-rule":  cmdAddRule,
-	"map":       func([]string) { cmdMap() },
-	"status":    func([]string) { cmdStatus() },
-	"list":      func([]string) { cmdList() },
-	"activate":  cmdActivate,
-	"test":      cmdTest,
-	"verify":    cmdVerify,
-	"terms":     func([]string) { cmdTerms() },
-	"hook":      cmdHook,
-	"setup":     func([]string) { cmdSetup() },
-	"export":    cmdExport,
-	"import":    cmdImport,
-	"reset":     cmdReset,
-	"proxy":     func([]string) { runProxy() },
-	"version":   func([]string) { cmdVersion() },
-	"--version": func([]string) { cmdVersion() },
-	"-v":        func([]string) { cmdVersion() },
-	"help":      func([]string) { usage() },
-	"--help":    func([]string) { usage() },
-	"-h":        func([]string) { usage() },
+	"init":        cmdInit,
+	"add":         cmdAdd,
+	"add-ip":      cmdAddIP,
+	"add-account": cmdAddAccount,
+	"add-rule":    cmdAddRule,
+	"map":         func([]string) { cmdMap() },
+	"status":      func([]string) { cmdStatus() },
+	"list":        func([]string) { cmdList() },
+	"activate":    cmdActivate,
+	"test":        cmdTest,
+	"verify":      cmdVerify,
+	"terms":       func([]string) { cmdTerms() },
+	"hook":        cmdHook,
+	"setup":       func([]string) { cmdSetup() },
+	"export":      cmdExport,
+	"import":      cmdImport,
+	"reset":       cmdReset,
+	"proxy":       func([]string) { runProxy() },
+	"version":     func([]string) { cmdVersion() },
+	"--version":   func([]string) { cmdVersion() },
+	"-v":          func([]string) { cmdVersion() },
+	"help":        func([]string) { usage() },
+	"--help":      func([]string) { usage() },
+	"-h":          func([]string) { usage() },
 }
 
 // Run is the CLI entrypoint: it parses os.Args and dispatches to the
@@ -72,6 +73,7 @@ Commands:
   init <name> [--fiction-org NAME]   Create named engagement
   add <domain> [--fiction-org NAME]  Pre-seed a target domain
   add-ip <ip>                       Pre-seed an IP mapping
+  add-account <id>                  Pre-seed an AWS account ID mapping
   add-rule <real> <fiction>          Add a custom rewrite rule
   map                               Show current mapping table
   status                            Show engagement info
@@ -219,6 +221,7 @@ func seedEngagement(engDir, fictionOrg string) error {
 		{"port_counter", portStart()},
 		{"ip_counter", "2"},
 		{"org_counter", "1"},
+		{"account_counter", "1"},
 		{"mappings.conf", "# Tanuki engagement mappings\n# Format: TYPE|REAL_VALUE|FICTION_VALUE\n"},
 	}
 

@@ -594,16 +594,16 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 // CLAUDE.md, a session resumed from elsewhere, or a client other than Claude
 // Code.
 func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
-	domains, ips, err := mapTargets(engDir, extraIgnored, texts...)
+	mapped, err := mapTargets(engDir, extraIgnored, texts...)
 	if err != nil {
 		return fmt.Errorf("cannot map new targets: %w", err)
 	}
 
-	if domains+ips == 0 {
+	if mapped == 0 {
 		return nil
 	}
 
-	logger.Info("auto-mapped new targets", "domains", domains, "ips", ips)
+	logger.Info("auto-mapped new targets", "count", mapped)
 	proxyCache.invalidate()
 
 	return nil

@@ -589,6 +589,7 @@ func TestImportedCountersAvoidCollision(t *testing.T) {
 		"domain|amazon.com|localhost:9005",
 		"wildcard|*.amazon.com|localhost:9006",
 		"ip|52.94.236.248|127.0.0.7",
+		"account|123456789012|000000000004",
 	}, "\n") + "\n"
 
 	writes := map[string]string{
@@ -613,6 +614,10 @@ func TestImportedCountersAvoidCollision(t *testing.T) {
 
 	if got := readFileContent(filepath.Join(engDir, "ip_counter")); got != "7" {
 		t.Errorf("ip_counter = %q, want 7", got)
+	}
+
+	if got := readFileContent(filepath.Join(engDir, "account_counter")); got != "5" {
+		t.Errorf("account_counter = %q, want 5", got)
 	}
 
 	// A newly added domain must not reuse a port already in the import.
@@ -718,7 +723,7 @@ func TestIPsMustStandAlone(t *testing.T) {
 		"v=1.2.3.456",
 		"ip2001:db8::1",
 	} {
-		if _, ips := targetsIn(text); len(ips) > 0 {
+		if ips := targetsIn(text).ips; len(ips) > 0 {
 			t.Errorf("targetsIn(%q) found addresses %v", text, ips)
 		}
 	}
@@ -734,7 +739,7 @@ func TestIPv6AfterAColonIsDetected(t *testing.T) {
 		"[2001:4860::8888]:443",
 		"inet6 2001:4860::8888/64",
 	} {
-		if _, ips := targetsIn(text); len(ips) != 1 {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
 			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
 		}
 	}
@@ -907,7 +912,7 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 
 	for range 16 {
 		wg.Go(func() {
-			if _, _, err := mapTargets(engDir, nil, "scan target-corp.com and 52.94.236.248"); err != nil {
+			if _, err := mapTargets(engDir, nil, "scan target-corp.com and 52.94.236.248"); err != nil {
 				t.Errorf("mapTargets: %v", err)
 			}
 		})

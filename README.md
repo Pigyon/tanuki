@@ -46,7 +46,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 
 Tanuki is an anonymization proxy built for AI-assisted security testing and bug bounty hunting. When you drive an agent like Claude Code through a pentest, every real domain, IP, and payload in your prompts leaves your machine. That's an OpSec risk, and it can also breach bug bounty program rules or an NDA.
 
-Tanuki runs as a Docker container and transparently intercepts that API traffic. Before a prompt leaves your machine, it swaps real target data (domains, subdomains, IPs, emails, paths, cloud identifiers, and aggressive security terminology) for harmless fictional development equivalents. When the model responds, the fiction is mapped back to reality so your local tools execute against the real targets. The model believes it is helping you debug a local dev application, and the upstream provider is blind to your actual engagement.
+Tanuki runs as a Docker container and transparently intercepts that API traffic. Before a prompt leaves your machine, it swaps real target data (domains, subdomains, IPs, emails, paths, cloud identifiers, AWS account IDs, and aggressive security terminology) for harmless fictional development equivalents. When the model responds, the fiction is mapped back to reality so your local tools execute against the real targets. The model believes it is helping you debug a local dev application, and the upstream provider is blind to your actual engagement.
 
 ## How it works
 
@@ -102,6 +102,7 @@ You're testing `bounty.amazon.com`. Here's what Tanuki does:
 | `admin@amazon.com`      | `admin@devtarget.local`      |
 | `Amazon`                | `DEVTARGET`                  |
 | `52.94.236.248`         | `127.0.0.3`                  |
+| `arn:aws:iam::123456789012:role/x` | `arn:aws:iam::000000000001:role/x` |
 | `/var/www/amazon/`      | `/var/www/dev/devtarget/`    |
 | `s3://amazon-prod`      | `file:///tmp/devtarget-prod` |
 | `SQL injection`         | `parameterized query test`   |
@@ -199,6 +200,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `init <name> [--fiction-org NAME]`  | Create a named engagement                          |
 | `add <domain> [--fiction-org NAME]` | Pre-seed a target domain                           |
 | `add-ip <ip>`                       | Pre-seed an IP mapping                             |
+| `add-account <id>`                  | Pre-seed an AWS account ID mapping                 |
 | `add-rule <real> <fiction>`         | Add a custom rewrite rule                          |
 | `map`                               | Show the current mapping table                     |
 | `status`                            | Show engagement info                               |
@@ -225,6 +227,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |
 | Cloud resources | Derived from org name                  | `file:///tmp/devtarget...` |
+| AWS account IDs | In ARNs and `Account`/`account_id` fields | `000000000001`             |
 | Custom rules    | User-defined via env or CLI            | User-defined               |
 
 ### Terminology (built-in, applied to all engagements)
@@ -297,7 +300,7 @@ $ ./tanuki verify report.md
         93.184.216.34
 
 2 value(s) have no mapping and would be sent as-is.
-Add them with: tanuki add <domain> / tanuki add-ip <ip>
+Add them with: tanuki add <domain> / tanuki add-ip <ip> / tanuki add-account <id>
 ```
 
 It exits non-zero when it finds something, so it drops into a pre-submission hook or CI as-is.

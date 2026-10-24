@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -340,8 +341,12 @@ func (rw *rewriter) splitHeld(text string) (send, hold string) {
 // it, so there matching a longer string is the point. Custom rules keep the
 // same greedy behaviour.
 func mappingBound(typ string) boundKind {
-	if typ == "domain" || typ == "email" {
+	switch typ {
+	case "domain", "email":
 		return boundHost
+	case "account":
+		// Not inside a longer run of digits or an identifier.
+		return boundWord
 	}
 
 	return boundNone
@@ -785,34 +790,46 @@ func resetCountersFromMappings(engDir string) error {
 		portNext = p
 	}
 
-	ipNext := 2
-	orgNext := 1
+	next := map[string]int{"port_counter": portNext, "ip_counter": 2, "org_counter": 1, "account_counter": 1}
 
 	for _, m := range loadMappings(engDir) {
-		if p, ok := portFromFiction(m.Fiction); ok && p >= portNext {
-			portNext = p + 1
-		}
-
-		if n, ok := ipCounterFromFiction(m.Fiction); ok && n >= ipNext {
-			ipNext = n + 1
-		}
-
-		if m.Type == "org" {
-			if n := orgNumberFromFiction(m.Fiction); n >= orgNext {
-				orgNext = n + 1
-			}
+		for counter, n := range usedCounters(m) {
+			next[counter] = max(next[counter], n+1)
 		}
 	}
 
-	if err := writeFileContent(filepath.Join(engDir, "port_counter"), strconv.Itoa(portNext)); err != nil {
-		return err
+	for _, counter := range slices.Sorted(maps.Keys(next)) {
+		if err := writeFileContent(filepath.Join(engDir, counter), strconv.Itoa(next[counter])); err != nil {
+			return err
+		}
 	}
 
-	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), strconv.Itoa(ipNext)); err != nil {
-		return err
+	return nil
+}
+
+// usedCounters returns the counter values a mapping's fiction was allocated
+// from, keyed by counter file.
+func usedCounters(m mappingEntry) map[string]int {
+	used := map[string]int{}
+
+	if p, ok := portFromFiction(m.Fiction); ok {
+		used["port_counter"] = p
 	}
 
-	return writeFileContent(filepath.Join(engDir, "org_counter"), strconv.Itoa(orgNext))
+	if n, ok := ipCounterFromFiction(m.Fiction); ok {
+		used["ip_counter"] = n
+	}
+
+	switch m.Type {
+	case "org":
+		used["org_counter"] = orgNumberFromFiction(m.Fiction)
+	case "account":
+		if n, err := strconv.Atoi(m.Fiction); err == nil {
+			used["account_counter"] = n
+		}
+	}
+
+	return used
 }
 
 func resolveFictionOrg(engDir, fictionOrg string) string {
@@ -946,6 +963,50 @@ func isPrivateIP(ip string) bool {
 	}
 
 	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
+}
+
+// accountRegexes find AWS account IDs where the context says that is what a
+// twelve-digit number is: the account field of an ARN, and an "Account" or
+// "account_id" key or variable (aws sts get-caller-identity,
+// AWS_ACCOUNT_ID=...). A bare twelve-digit number is too common to take.
+var accountRegexes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\barn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):`),
+	regexp.MustCompile(`(?i)account(?:[_ -]?id)?["']?\s*[:=]\s*["']?(\d{12})\b`),
+}
+
+var awsAccountRegex = regexp.MustCompile(`^\d{12}$`)
+
+// accountFictionPrefix starts every fiction account ID. No real account is
+// numbered that low, so scanning tanuki's own output never finds one.
+const accountFictionPrefix = "0000000"
+
+// maxFictionAccount is the last counter value that keeps the prefix.
+const maxFictionAccount = 99999
+
+func isFictionAccount(id string) bool {
+	return strings.HasPrefix(id, accountFictionPrefix)
+}
+
+// addAccountMapping gives an AWS account ID a fiction of the same shape, so
+// an ARN still reads as an ARN.
+func addAccountMapping(engDir, id string) error {
+	unlock := lockAllocation(engDir)
+	defer unlock()
+
+	if mappingExists(engDir, "account", id) {
+		return nil
+	}
+
+	n, err := nextCounter(engDir, "account_counter", "1")
+	if err != nil {
+		return err
+	}
+
+	if n > maxFictionAccount {
+		return fmt.Errorf("fiction account range exhausted for %s (would leak to upstream)", id)
+	}
+
+	return addMapping(engDir, "account", id, fmt.Sprintf("%012d", n))
 }
 
 func showMappings() error {
@@ -1114,18 +1175,17 @@ func hasCommonTLD(domain string) bool {
 }
 
 // scanned is what scanTargets found in one string.
-type scanned struct{ domains, ips []string }
+type scanned struct{ domains, ips, accounts []string }
 
 var targetScans memoCache[scanned]
 
 // targetsIn returns the distinct real-looking values in text: domains on a
-// common TLD, lowercased, and public IPs in canonical form. It depends on text
-// alone, so long strings are scanned once (see memoCache); callers apply the
-// ignore list, which can change, and must not modify the slices.
-func targetsIn(text string) (domains, ips []string) {
-	s := targetScans.get(text, scanTargets)
-
-	return s.domains, s.ips
+// common TLD, lowercased, public IPs in canonical form, and AWS account IDs.
+// It depends on text alone, so long strings are scanned once (see memoCache);
+// callers apply the ignore list, which can change, and must not modify the
+// slices.
+func targetsIn(text string) scanned {
+	return targetScans.get(text, scanTargets)
 }
 
 func scanTargets(text string) scanned {
@@ -1147,20 +1207,29 @@ func scanTargets(text string) scanned {
 		}
 	}
 
+	for _, re := range accountRegexes {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if id := m[1]; !isFictionAccount(id) && !seen[id] {
+				seen[id] = true
+				s.accounts = append(s.accounts, id)
+			}
+		}
+	}
+
 	return s
 }
 
-// findNewTargets returns the domains and public IPs in texts that have no
-// mapping yet, reading mappings.conf once for all of them.
-func findNewTargets(engDir string, texts []string, extraIgnored ...string) (domains, ips []string) {
+// findNewTargets returns the domains, public IPs and AWS account IDs in texts
+// that have no mapping yet, reading mappings.conf once for all of them.
+func findNewTargets(engDir string, texts []string, extraIgnored ...string) scanned {
 	existing := mappingKeys(engDir)
 	emitted := make(map[string]bool)
-	domains, ips = []string{}, []string{}
+	found := scanned{domains: []string{}, ips: []string{}, accounts: []string{}}
 
 	for _, text := range texts {
-		foundDomains, foundIPs := targetsIn(text)
+		s := targetsIn(text)
 
-		for _, domain := range foundDomains {
+		for _, domain := range s.domains {
 			if isIgnoredDomain(domain, extraIgnored...) {
 				continue
 			}
@@ -1170,25 +1239,30 @@ func findNewTargets(engDir string, texts []string, extraIgnored ...string) (doma
 			for _, candidate := range []string{extractBaseDomain(domain), domain} {
 				if !emitted[candidate] && !existing["domain|"+candidate] {
 					emitted[candidate] = true
-					domains = append(domains, candidate)
+					found.domains = append(found.domains, candidate)
 				}
 			}
 		}
 
-		for _, ip := range foundIPs {
+		for _, ip := range s.ips {
 			if !emitted[ip] && !existing["ip|"+ip] {
 				emitted[ip] = true
-				ips = append(ips, ip)
+				found.ips = append(found.ips, ip)
+			}
+		}
+
+		for _, id := range s.accounts {
+			if !emitted[id] && !existing["account|"+id] {
+				emitted[id] = true
+				found.accounts = append(found.accounts, id)
 			}
 		}
 	}
 
-	return domains, ips
+	return found
 }
 
 // findNewDomains returns the domains in text that have no mapping yet.
 func findNewDomains(text, engDir string) []string {
-	domains, _ := findNewTargets(engDir, []string{text})
-
-	return domains
+	return findNewTargets(engDir, []string{text}).domains
 }

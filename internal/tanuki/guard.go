@@ -120,25 +120,33 @@ func isIgnoredDomain(domain string, extra ...string) bool {
 	return false
 }
 
-// mapTargets gives every unmapped domain and public IP in texts a fiction and
-// reports how many of each it found. Both candidate lists are collected before
-// anything is written, so neither pass sees the other's mappings.
-func mapTargets(engDir string, extraIgnored []string, texts ...string) (domains, ips int, err error) {
-	newDomains, newIPs := findNewTargets(engDir, texts, extraIgnored...)
+// mapTargets gives every unmapped domain, public IP and AWS account ID in
+// texts a fiction and reports how many it mapped. Every candidate list is
+// collected before anything is written, so no pass sees another's mappings.
+func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, error) {
+	found := findNewTargets(engDir, texts, extraIgnored...)
 
-	for _, domain := range newDomains {
+	var err error
+
+	for _, domain := range found.domains {
 		if addErr := addDomain(engDir, domain, ""); addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
 		}
 	}
 
-	for _, ip := range newIPs {
+	for _, ip := range found.ips {
 		if addErr := addIPMapping(engDir, ip); addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping IP %s: %w", ip, addErr))
 		}
 	}
 
-	return len(newDomains), len(newIPs), err
+	for _, id := range found.accounts {
+		if addErr := addAccountMapping(engDir, id); addErr != nil {
+			err = errors.Join(err, fmt.Errorf("mapping account %s: %w", id, addErr))
+		}
+	}
+
+	return len(found.domains) + len(found.ips) + len(found.accounts), err
 }
 
 // residualTargets returns the real-looking values still present in text. It
@@ -155,9 +163,9 @@ func residualTargets(extraIgnored []string, texts ...string) []string {
 	found := []string{}
 
 	for _, text := range texts {
-		domains, ips := targetsIn(text)
+		s := targetsIn(text)
 
-		for _, v := range slices.Concat(domains, ips) {
+		for _, v := range slices.Concat(s.domains, s.ips, s.accounts) {
 			if seen[v] || isIgnoredDomain(v, extraIgnored...) {
 				continue
 			}
