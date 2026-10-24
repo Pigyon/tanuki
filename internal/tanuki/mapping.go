@@ -1383,21 +1383,34 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 	return ipMatch{}, false
 }
 
-// versionLead is how far back precededByVersion looks for the word.
-const versionLead = 24
-
-// precededByVersion reports whether the token at i is introduced by the word
-// "version". A four-part version string is shaped exactly like an address --
-// "<AssemblyVersion>1.0.0.0</…>", `"version": "4.17.21.1"` -- and nothing in
-// the number itself tells them apart. Where the text says which it is, take
-// its word; "upgraded from 1.2.3.4" still reads as an address.
+// precededByVersion reports whether the number at i is introduced by the word
+// "version". A four-part version string is shaped exactly like an address, and
+// nothing in the number tells them apart, so where the text says which it is,
+// take its word.
+//
+// The word has to end the preceding token, not merely be a suffix of it:
+// testing for a trailing "ver" swallowed "Server: 203.0.113.5",
+// "resolver 203.0.113.9" and "failover 203.0.113.7", which is the commonest
+// shape in nmap, curl and dig output. Compounds ending in "version"
+// (AssemblyVersion, FileVersion) still count.
 func precededByVersion(text string, i int) bool {
-	from := max(0, i-versionLead)
+	end := i
+	for end > 0 && strings.ContainsRune(" \t\"'>=:", rune(text[end-1])) {
+		end--
+	}
 
-	lead := strings.ToLower(text[from:i])
-	lead = strings.TrimLeft(strings.TrimRight(lead, " \t\"'>=:"), " \t")
+	start := end
+	for start > 0 && isASCIILetterByte(text[start-1]) {
+		start--
+	}
 
-	return strings.HasSuffix(lead, "version") || strings.HasSuffix(lead, "ver")
+	word := strings.ToLower(text[start:end])
+
+	return word == "ver" || strings.HasSuffix(word, "version")
+}
+
+func isASCIILetterByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func isAlnumByte(b byte) bool {
@@ -1540,50 +1553,107 @@ func portThenPath(text string, i int) bool {
 // isDetectableHost reports whether the token at [start,end) is a hostname
 // rather than something code is made of.
 //
-// Where the surroundings say it is a host, any real TLD counts. A bare token
-// needs a common TLD and a registrable name that is not an everyday word:
-// ".net", ".io", ".at", ".network", ".global" and ".online" are all real TLDs,
-// so "using System.Net;", "self.network" and "buffer.at(i)" are hostnames by
-// shape alone, and mapping them rewrote the source the model was reading.
+// Where the surroundings say it is a host, any real TLD counts and the name is
+// not second-guessed: hoisting the everyday-word check above this made
+// "https://admin.global.com/login" and "admin@core.ac.uk" invisible to
+// detection and to the gate, because "global" and "core" are ordinary words.
+// A bare token has no such marker, so there the name has to carry it.
 func isDetectableHost(text, domain string, start, end int) bool {
-	if !worthAnOrgRule(extractOrgName(domain)) {
-		return false
-	}
-
 	if hostContext(text, start, end) {
 		return hasCommonTLD(domain) || isRealDomain(domain)
 	}
 
-	return hasCommonTLD(domain) || deepEnoughToBeAHost(domain)
+	if !worthAnOrgRule(extractOrgName(domain)) {
+		return false
+	}
+
+	return hasCommonTLD(domain) || deepEnoughToBeAHost(text, domain, start, end)
 }
 
-// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD when it
-// has three or more labels.
+// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD only
+// when it stands alone on its line, which is what enumeration output is:
+// subfinder, amass, dnsx and httpx print one host per line.
 //
-// Enumeration output is where targets arrive -- subfinder, nmap, httpx and
-// report tables list bare hostnames with no scheme, "@" or path around them --
-// and the curated list covers 72 of some 1500 real TLDs, so "api.target.in"
-// was invisible to detection and to the gate alike. Three labels is what
-// separates those from the two-label attribute access the curated list exists
-// to filter.
-//
-// A TLD that is also a common file extension is refused here: ".sh", ".py",
-// ".rs", ".md", ".zip" and ".mov" are all real, and "scripts/build.prod.sh" is
-// not a hostname.
-func deepEnoughToBeAHost(domain string) bool {
+// Three labels on their own are not a hostname signal. Attribute chains reach
+// real TLDs constantly -- ".app", ".id", ".at", ".name", ".email", ".run",
+// ".new", ".top" are all delegated -- so "module.exports.app",
+// "self.model.fit", "event.target.id" and "spec.template.labels.app" were
+// mapped, with wildcards, and the model was then shown "localhost:9004 = app;"
+// for the rest of the engagement.
+func deepEnoughToBeAHost(text, domain string, start, end int) bool {
 	labels := strings.Split(domain, ".")
-	if len(labels) < 3 {
+	if len(labels) < 3 || fileExtensionTLDs[labels[len(labels)-1]] {
 		return false
 	}
 
-	if fileExtensionTLDs[labels[len(labels)-1]] {
-		return false
-	}
-
-	return isRealDomain(domain)
+	return isRealDomain(domain) && standsAsHostField(text, start, end)
 }
 
-// fileExtensionTLDs are real TLDs that are far more often a file extension.
+// standsAsHostField reports whether text[start:end] is a field on a line that
+// reads as tool output rather than code. Enumeration and scan output put a
+// host in its own column ("api.target.in", "host api.target.in is up",
+// "| api.target.in | 200 |"); code puts an attribute chain in an expression,
+// which the punctuation gives away.
+func standsAsHostField(text string, start, end int) bool {
+	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
+
+	lineEnd := strings.IndexByte(text[end:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(text)
+	} else {
+		lineEnd += end
+	}
+
+	if lineLooksLikeCode(text[lineStart:lineEnd]) {
+		return false
+	}
+
+	return isFieldEdge(text, start-1) && isFieldEdge(text, end)
+}
+
+// isFieldEdge reports whether the byte at i separates columns, or is off the
+// end of the text.
+func isFieldEdge(text string, i int) bool {
+	if i < 0 || i >= len(text) {
+		return true
+	}
+
+	switch text[i] {
+	case ' ', '\t', '\r', '\n', '|', ',':
+		return true
+	default:
+		return false
+	}
+}
+
+// numericParens is a parenthesised group holding only a number or an address,
+// as "Nmap scan report for api.target.in (203.0.113.5)" has. That is a column,
+// not a call, so it does not make the line code.
+var numericParens = regexp.MustCompile(`\([0-9.:\s]+\)`)
+
+// lineLooksLikeCode reports whether a line carries the punctuation of an
+// expression. A colon counts unless a digit follows it, which is a port.
+func lineLooksLikeCode(line string) bool {
+	line = numericParens.ReplaceAllString(line, " ")
+
+	for i := range len(line) {
+		switch line[i] {
+		case '=', ';', '(', ')', '{', '}', '[', ']', '\'', '"', '`', '<', '>':
+			return true
+		case ':':
+			if i+1 >= len(line) || line[i+1] < '0' || line[i+1] > '9' {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// fileExtensionTLDs are real TLDs that are far more often a file extension. A
+// bare token ending in one is not read as a host, so a genuine target on one
+// (.md is Moldova, .cc Cocos, .ml Mali, .so Somalia) needs a URL, an "@", or
+// "tanuki add".
 var fileExtensionTLDs = map[string]bool{
 	"sh": true, "py": true, "rs": true, "md": true, "pl": true, "pm": true,
 	"so": true, "cc": true, "ml": true, "zip": true, "mov": true, "bat": true,

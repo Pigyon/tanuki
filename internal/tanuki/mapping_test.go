@@ -539,6 +539,56 @@ func TestBareEnumerationOutputIsDetected(t *testing.T) {
 	}
 }
 
+// TestHostContextOutranksTheWordList: the everyday-word guard was hoisted
+// above the context check, so a target whose registrable name is an ordinary
+// word was invisible even behind a scheme or an "@" -- to the gate as well.
+func TestHostContextOutranksTheWordList(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"https://api.global.com/login", "https://www.store.com/cart",
+		"https://core.ac.uk/search", "admin@core.ac.uk",
+		"https://admin.global.com/login", "ops@data.com",
+	} {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+
+		if res := residualTargets(nil, text); len(res) == 0 {
+			t.Errorf("the gate missed the host in %q", text)
+		}
+	}
+}
+
+// TestAttributeChainsAreNotHosts: accepting any bare token with three labels
+// on an ICANN suffix read ordinary code as hostnames, with wildcards, and the
+// model was then shown "localhost:9004 = app;" for the rest of the engagement.
+//
+// The line is what decides. A chain written alone on a line, with nothing else
+// on it, is indistinguishable from the enumeration output this is meant to
+// catch, and is still read as a host.
+func TestAttributeChainsAreNotHosts(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	code := []string{
+		"module.exports.app = app;", "self.model.fit(X, y)",
+		"const id = event.target.id;", "return this.chars.at(i);",
+		"span.trace.id = tid", "log.console.info('hi')",
+		"spec.template.metadata.labels.app: web", "form.contact.email = v",
+		"job.pipeline.run()", "order = Order.payment.new",
+		"return err.stack.top;", "conn.pool.max = 10",
+	}
+	for _, text := range code {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
 // TestDeepCodeTokensAreNotHosts is the other side: three labels is only a
 // signal when the last one is not a file extension and the registrable name is
 // not an everyday word.
@@ -973,6 +1023,40 @@ func TestVersionStringsAreNotAddresses(t *testing.T) {
 	for _, text := range []string{"ping 203.0.113.5", "host 8.8.8.8", "upgraded to 1.2.3.5"} {
 		if ips := targetsIn(text).ips; len(ips) != 1 {
 			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestAddressAfterAWordEndingInVer: the version check tested for a trailing
+// "ver", so "Server: 203.0.113.5" counted as a version string. That is the
+// commonest shape in nmap, curl and dig output, and because the gate shares
+// the recogniser the address left with no refusal at all.
+func TestAddressAfterAWordEndingInVer(t *testing.T) {
+	t.Parallel()
+
+	found := []string{
+		"Server: 203.0.113.5", "the web server 203.0.113.5 responded",
+		"DNS resolver 203.0.113.9", "failover 203.0.113.7",
+		"Nameserver=203.0.113.14", "Driver 203.0.113.11",
+		`{"server": "203.0.113.5"}`, "Server: 2001:db8::1",
+	}
+	for _, text := range found {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+
+		if res := residualTargets(nil, text); len(res) != 1 {
+			t.Errorf("the gate missed the address in %q: %v", text, res)
+		}
+	}
+
+	// The word itself, and compounds ending in it, still suppress.
+	for _, text := range []string{
+		"<AssemblyVersion>1.0.0.0</AssemblyVersion>", `"version": "4.17.21.1"`,
+		"version=1.2.3.4", "ver 1.2.3.4",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
 		}
 	}
 }
