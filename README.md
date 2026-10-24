@@ -192,6 +192,9 @@ those domains as targets while anything else it detects is merely hidden:
 ./tanuki scope list
 ```
 
+Adding a domain to the scope promotes it even if it was already mapped, so you
+can set the scope part-way through an engagement.
+
 | | In scope | Detected, out of scope |
 | --- | --- | --- |
 | Hostname → `localhost:<port>` | yes | yes |

@@ -757,30 +757,18 @@ func extractOrgName(domain string) string {
 	return domain
 }
 
-// baseLinesFor returns the mappings a base domain gets: the hostname alone
-// when it was merely seen, the full derived set when it is a target.
-func baseLinesFor(engDir, baseDomain, orgName, baseFiction string, port int, derived bool) ([]string, error) {
-	if !derived {
-		return []string{fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port)}, nil
-	}
-
-	fiction, err := allocateOrgFiction(engDir, baseFiction)
-	if err != nil {
-		return nil, err
-	}
-
-	return baseMappingLines(baseDomain, port, orgName, fiction), nil
+func hostLine(domain string, port int) string {
+	return fmt.Sprintf("domain|%s|localhost:%d", domain, port)
 }
 
-// baseMappingLines builds the domain mapping and the org, email, path, and
-// cloud values derived from it. Every fiction is tied to fictionOrg so distinct
+// derivedMappingLines builds the org, email, path and cloud values a target
+// gets beyond its hostname. Every fiction is tied to fictionOrg so distinct
 // real orgs reverse to distinct targets instead of colliding.
-func baseMappingLines(baseDomain string, port int, orgName, fictionOrg string) []string {
+func derivedMappingLines(baseDomain, orgName, fictionOrg string) []string {
 	org := strings.ToLower(orgName)
 	fictionLower := strings.ToLower(fictionOrg)
 
 	return []string{
-		fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port),
 		fmt.Sprintf("org|%s|%s", org, fictionOrg),
 		fmt.Sprintf("email|@%s|@%s.local", baseDomain, fictionLower),
 		fmt.Sprintf("path|/%s/|/dev/%s/", org, fictionLower),
@@ -981,12 +969,21 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		base, err := baseLinesFor(engDir, baseDomain, orgName, baseFiction, port, derived)
+		lines = append(lines, hostLine(baseDomain, port))
+	}
+
+	// Checked on its own so a domain already mapped by hostname can still be
+	// told it is a target later: a subdomain in scope whose apex is not used
+	// to find the apex mapped, skip the whole block, and leave the org, email,
+	// path and cloud values uncreated -- which the gate does not catch,
+	// because it only looks for values that have a mapping.
+	if derived && !existing[mappingKey(mapOrg, strings.ToLower(orgName))] {
+		fiction, err := allocateOrgFiction(engDir, baseFiction)
 		if err != nil {
 			return err
 		}
 
-		lines = append(lines, base...)
+		lines = append(lines, derivedMappingLines(baseDomain, orgName, fiction)...)
 	}
 
 	if !existing[mappingKey(mapWildcard, "*."+baseDomain)] {
@@ -1004,7 +1001,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, fmt.Sprintf("domain|%s|localhost:%d", domain, port))
+		lines = append(lines, hostLine(domain, port))
 	}
 
 	if len(lines) > 0 {

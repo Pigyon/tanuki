@@ -6,16 +6,21 @@ import (
 	"testing"
 )
 
+// scopeDomain is the fixture target for the scope tests; it is deliberately
+// not testBaseDomain, so a scope entry and the shared fixtures cannot be
+// confused for one another.
+const scopeDomain = "acme.com"
+
 func TestScopeCovers(t *testing.T) {
 	t.Parallel()
 
 	sc := parseScope("# a comment\n*.acme.com\n\nsub.other.net\n")
 
-	if !slices.Equal(sc, scope{"acme.com", "sub.other.net"}) {
+	if !slices.Equal(sc, scope{scopeDomain, "sub.other.net"}) {
 		t.Fatalf("parseScope = %v", sc)
 	}
 
-	covered := []string{"acme.com", "www.acme.com", "a.b.acme.com", "sub.other.net", "deep.sub.other.net"}
+	covered := []string{scopeDomain, "www.acme.com", "a.b.acme.com", "sub.other.net", "deep.sub.other.net"}
 	for _, d := range covered {
 		if !sc.covers(d) {
 			t.Errorf("%s is not covered", d)
@@ -89,7 +94,7 @@ func TestInScopeDomainKeepsDerivedMappings(t *testing.T) {
 
 	engDir := newTestEngagement(t)
 
-	if _, err := addToScope(engDir, "acme.com"); err != nil {
+	if _, err := addToScope(engDir, scopeDomain); err != nil {
 		t.Fatalf("addToScope: %v", err)
 	}
 
@@ -118,7 +123,7 @@ func TestScopeAddIsIdempotentAndRemovable(t *testing.T) {
 		t.Error("the same pattern was added twice")
 	}
 
-	removed, err := removeFromScope(engDir, "acme.com")
+	removed, err := removeFromScope(engDir, scopeDomain)
 	if err != nil || !removed {
 		t.Fatalf("removeFromScope = %v, %v", removed, err)
 	}
@@ -128,15 +133,89 @@ func TestScopeAddIsIdempotentAndRemovable(t *testing.T) {
 	}
 }
 
-func TestScopeRejectsValuesThatBreakTheFile(t *testing.T) {
+// TestScopeRejectsMalformedPatterns: a stored typo can never match, and since
+// any non-empty scope makes everything outside it host-only, a scope of
+// nothing but typos quietly downgrades every target.
+func TestScopeRejectsMalformedPatterns(t *testing.T) {
 	t.Parallel()
 
 	engDir := newTestEngagement(t)
 
-	for _, bad := range []string{"", "*.", "acme.com\nevil.com", "a|b"} {
-		if _, err := addToScope(engDir, bad); err == nil {
-			t.Errorf("addToScope(%q) was accepted", bad)
+	bad := []string{
+		"", "*.", "acme.com\nevil.com", "a|b",
+		"*.*.acme.com", "https://acme.com", "acme.com/", "**acme.com", "acme com",
+	}
+	for _, p := range bad {
+		if _, err := addToScope(engDir, p); err == nil {
+			t.Errorf("addToScope(%q) was accepted", p)
 		}
+	}
+
+	if got := loadScope(engDir); len(got) != 0 {
+		t.Errorf("a rejected pattern was stored: %v", got)
+	}
+
+	for _, p := range []string{scopeDomain, "*.sub.acme.co.uk"} {
+		if _, err := addToScope(engDir, p); err != nil {
+			t.Errorf("addToScope(%q) was rejected: %v", p, err)
+		}
+	}
+}
+
+// TestInScopeSubdomainOfAnOutOfScopeApex: the apex is mapped first and is not
+// in scope, so it was mapped host-only; the subdomain then found the apex
+// already mapped and skipped the derived set, leaving the org name, bucket and
+// path to go upstream with nothing to refuse them.
+func TestInScopeSubdomainOfAnOutOfScopeApex(t *testing.T) {
+	engDir := proxyEngagement(t)
+
+	if _, err := addToScope(engDir, "app.acme.com"); err != nil {
+		t.Fatalf("addToScope: %v", err)
+	}
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":` +
+		`"test https://app.acme.com/ for Acme Corp; bucket s3://acme/dump; path /acme/etc"}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	for _, real := range []string{"Acme", "s3://acme", "/acme/"} {
+		if strings.Contains(string(out), real) {
+			t.Errorf("%q reached the upstream body: %s", real, out)
+		}
+	}
+}
+
+// TestScopeAddPromotesAnAlreadyMappedDomain: detection never revisits a domain
+// it has mapped, so one mapped before its scope entry stayed host-only.
+func TestScopeAddPromotesAnAlreadyMappedDomain(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := addToScope(engDir, "other.example"); err != nil {
+		t.Fatalf("addToScope: %v", err)
+	}
+
+	if _, err := mapTargets(engDir, nil, "acme corp owns acme.com"); err != nil {
+		t.Fatalf("mapTargets: %v", err)
+	}
+
+	if slices.ContainsFunc(loadMappings(engDir), func(m mappingEntry) bool { return m.Type == mapOrg }) {
+		t.Fatal("an out-of-scope domain got an org mapping")
+	}
+
+	if _, err := addToScope(engDir, scopeDomain); err != nil {
+		t.Fatalf("addToScope: %v", err)
+	}
+
+	if !slices.ContainsFunc(loadMappings(engDir), func(m mappingEntry) bool { return m.Type == mapOrg }) {
+		t.Error("scope add did not promote the already-mapped domain")
+	}
+
+	r2f, _ := rewriters(t, engDir)
+	if got := r2f.rewrite("acme corp"); strings.Contains(got, "acme") {
+		t.Errorf("org name still reaches upstream: %q", got)
 	}
 }
 

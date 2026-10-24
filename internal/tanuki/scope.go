@@ -1,8 +1,10 @@
 package tanuki
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -83,10 +85,26 @@ func (s scope) isTarget(domain string) bool {
 // whether it did.
 func addToScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
-	if p == "" || strings.ContainsAny(p, "|\r\n") {
-		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
+	if !scopePatternRegex.MatchString(p) {
+		return false, fmt.Errorf("invalid scope pattern %q: expected a domain such as example.com or *.example.com", pattern)
 	}
 
+	added, err := appendScopePattern(engDir, p)
+	if err != nil || !added {
+		return added, err
+	}
+
+	// Promotion runs outside the lock: addDomain takes the same one.
+	return true, promoteToTargets(engDir, p)
+}
+
+// scopePatternRegex is a hostname, once the leading "*." is gone. Without it a
+// pasted URL or a typo was stored as a pattern that covers() can never match,
+// and because any non-empty scope makes everything outside it host-only, a
+// scope of nothing but typos quietly downgraded every target.
+var scopePatternRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+func appendScopePattern(engDir, p string) (bool, error) {
 	unlock := lockAllocation(engDir)
 	defer unlock()
 
@@ -95,6 +113,30 @@ func addToScope(engDir, pattern string) (bool, error) {
 	}
 
 	return true, appendToFile(filepath.Join(engDir, scopeFile), p)
+}
+
+// promoteToTargets gives the derived mappings to domains that were mapped by
+// hostname alone before this pattern said they were targets. Detection never
+// revisits a domain it has already mapped, so without this a domain mapped
+// before its scope entry stayed host-only for the rest of the engagement.
+func promoteToTargets(engDir, pattern string) error {
+	covering := scope{pattern}
+
+	var err error
+
+	for _, m := range loadMappings(engDir) {
+		if m.Type != mapDomain || !covering.covers(m.Real) {
+			continue
+		}
+
+		if addErr := addDomain(engDir, m.Real, ""); addErr != nil {
+			err = errors.Join(err, fmt.Errorf("promoting %s: %w", m.Real, addErr))
+		}
+	}
+
+	proxyCache.invalidate()
+
+	return err
 }
 
 // removeFromScope drops a pattern and reports whether it was there.
