@@ -105,7 +105,11 @@ func addToScope(engDir, pattern string) (bool, error) {
 var scopePatternRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
 
 func appendScopePattern(engDir, p string) (bool, error) {
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	if slices.Contains(loadScope(engDir), p) {
@@ -143,7 +147,11 @@ func promoteToTargets(engDir, pattern string) error {
 func removeFromScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	current := loadScope(engDir)

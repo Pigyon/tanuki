@@ -694,7 +694,7 @@ func mappingKeys(engDir string) map[string]bool {
 // lockAllocation serialises allocation in engDir. Checking that a value has no
 // mapping and appending one must be a single step: run apart, concurrent
 // requests naming the same new target each gave it a different fiction.
-func lockAllocation(engDir string) func() {
+func lockAllocation(engDir string) (func(), error) {
 	return acquireFileLock(filepath.Join(engDir, "allocate"))
 }
 
@@ -708,7 +708,11 @@ func mappingExists(engDir, typ, realVal string) bool {
 // addCustomRule adds a real|fiction rule unless one exists for realVal, and
 // reports whether it did.
 func addCustomRule(engDir, realVal, fiction string) (bool, error) {
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapCustom, realVal) {
@@ -773,7 +777,11 @@ func addMapping(engDir, typ, realVal, fiction string) error {
 func nextCounter(engDir, filename, defaultVal string) (int, error) {
 	path := filepath.Join(engDir, filename)
 
-	unlock := acquireFileLock(path)
+	unlock, err := acquireFileLock(path)
+	if err != nil {
+		return 0, err
+	}
+
 	defer unlock()
 
 	n, err := readCounter(path, defaultVal)
@@ -1071,7 +1079,11 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	baseDomain := extractBaseDomain(domain)
 	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	// One snapshot for all three checks: nothing is appended until the end.
@@ -1159,7 +1171,11 @@ func addIPMapping(engDir, ip string) error {
 		return nil
 	}
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapIP, ip) {
@@ -1232,7 +1248,11 @@ func isFictionAccount(id string) bool {
 // addAccountMapping gives an AWS account ID a fiction of the same shape, so
 // an ARN still reads as an ARN.
 func addAccountMapping(engDir, id string) error {
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapAccount, id) {

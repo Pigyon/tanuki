@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -422,5 +423,48 @@ func TestShortOrgInsideItsFictionIsAllowed(t *testing.T) {
 
 	if err := addDomain(engDir, "ge.com", "DEVTARGET"); err != nil {
 		t.Errorf("addDomain(ge.com): %v", err)
+	}
+}
+
+// TestAllocationRefusesWhenItCannotLock: the lock used to log a warning and
+// return a no-op release when it could not be taken, so callers allocated
+// unserialised -- the duplicate-fiction bug the lock exists to prevent. Under
+// contention that produced several conflicting mapping sets for one target,
+// each with its own port and org number, leaving the reverse pass ambiguous.
+func TestAllocationRefusesWhenItCannotLock(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	// A lock path that cannot be opened as a file.
+	if err := os.MkdirAll(filepath.Join(engDir, "allocate.lock"), 0o750); err != nil {
+		t.Fatalf("seeding the blocked lock: %v", err)
+	}
+
+	var wg sync.WaitGroup
+
+	failures := make(chan struct{}, 16)
+
+	for range 16 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if _, err := mapTargets(engDir, nil, "scan newtarget.com"); err != nil {
+				failures <- struct{}{}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(failures)
+
+	if len(failures) != 16 {
+		t.Errorf("%d of 16 allocations refused, want all of them", len(failures))
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("an unserialised allocation wrote %d mappings: %+v", len(got), got)
 	}
 }

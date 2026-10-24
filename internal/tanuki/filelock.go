@@ -1,6 +1,7 @@
 package tanuki
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -26,30 +27,33 @@ func warnErr(err error, msg, path string) {
 // one has to be a single step: run apart, concurrent requests naming the same
 // new target each gave it a different fiction.
 //
+// A lock that cannot be taken is an error, never a warning to carry on past.
+// Degrading to a no-op let callers allocate unserialised, which is the bug the
+// lock exists to prevent.
+//
 // The lock file is created once and then left in place. Removing it on release
 // is what lets a second holder's lock be deleted by the first.
-func acquireFileLock(path string) func() {
+func acquireFileLock(path string) (release func(), err error) {
 	lockPath := path + ".lock"
 
-	warnErr(os.MkdirAll(filepath.Dir(lockPath), lockDirMode), "creating lock directory failed", lockPath)
+	if err := os.MkdirAll(filepath.Dir(lockPath), lockDirMode); err != nil {
+		return nil, fmt.Errorf("creating lock directory for %s: %w", lockPath, err)
+	}
 
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, lockFileMode)
 	if err != nil {
-		warnErr(err, "opening lock file failed", lockPath)
-
-		return func() {}
+		return nil, fmt.Errorf("opening lock file %s: %w", lockPath, err)
 	}
 
 	unlock, err := lockFile(f)
 	if err != nil {
-		warnErr(err, "locking file failed", lockPath)
 		warnErr(f.Close(), "closing lock file failed", lockPath)
 
-		return func() {}
+		return nil, fmt.Errorf("locking %s: %w", lockPath, err)
 	}
 
 	return func() {
 		warnErr(unlock(), "unlocking file failed", lockPath)
 		warnErr(f.Close(), "closing lock file failed", lockPath)
-	}
+	}, nil
 }
