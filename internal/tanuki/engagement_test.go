@@ -301,6 +301,52 @@ func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 	}
 }
 
+// TestShutdownCleanupReversesConfigure guards the proxy's shutdown path: what
+// configureHooks writes on start, removeTanukiSettings must take back on stop.
+// Left behind, ANTHROPIC_BASE_URL points the next session at a dead port
+// (ECONNREFUSED). The operator's own settings must survive either way.
+func TestShutdownCleanupReversesConfigure(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	ownSettings := `{"permissions":{"allow":["Bash(go test:*)"]},"env":{"MY_VAR":"keep-me"}}`
+	settingsPath := filepath.Join(".claude", "settings.json")
+
+	if err := os.WriteFile(settingsPath, []byte(ownSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureHooks(); err != nil {
+		t.Fatalf("configureHooks: %v", err)
+	}
+
+	if raw, _ := os.ReadFile(settingsPath); !strings.Contains(string(raw), "ANTHROPIC_BASE_URL") {
+		t.Fatal("configureHooks did not install the proxy redirect")
+	}
+
+	removeTanukiSettings(settingsPath)
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json gone, but it held the operator's own config: %v", err)
+	}
+
+	if strings.Contains(string(raw), "ANTHROPIC_BASE_URL") {
+		t.Error("redirect survived shutdown; next session would hit a dead port")
+	}
+
+	if strings.Contains(string(raw), "tanuki") {
+		t.Error("tanuki hook survived shutdown; every tool call would docker exec a gone container")
+	}
+
+	if !strings.Contains(string(raw), "keep-me") || !strings.Contains(string(raw), "go test") {
+		t.Errorf("operator's own settings were lost: %s", raw)
+	}
+}
+
 // TestEnvSeedsSubdomains: a subdomain in TANUKI_DOMAINS was skipped whenever
 // its apex was already mapped, which the documented example asks for.
 func TestEnvSeedsSubdomains(t *testing.T) {

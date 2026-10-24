@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -108,6 +109,16 @@ func runProxy() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
+	}
+
+	// configureHooks pointed Claude Code at this proxy on start; undo that now.
+	// Left behind, ANTHROPIC_BASE_URL sends the next session to a port nothing
+	// is listening on (ECONNREFUSED), and every tool call tries to docker exec
+	// a container that is gone. A restart re-applies it, so this is only ever
+	// in effect while the proxy is actually down.
+	settingsPath := filepath.Join(".claude", "settings.json")
+	if fileExists(settingsPath) {
+		removeTanukiSettings(settingsPath)
 	}
 }
 
