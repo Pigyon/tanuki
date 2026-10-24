@@ -72,8 +72,8 @@ Commands:
   proxy                             Start the proxy server (container entrypoint)
   setup                             Configure Claude Code hooks (auto-creates engagement)
   init <name> [--fiction-org NAME]   Create named engagement
-  add <domain> [--fiction-org NAME]  Pre-seed a target domain
-  add-ip <ip>                       Pre-seed an IP mapping
+  add <domain>... [--fiction-org NAME]  Pre-seed target domains
+  add-ip <ip>...                    Pre-seed IP mappings
   add-account <id>                  Pre-seed an AWS account ID mapping
   scope [list|add|rm] <domain>      Show or edit which domains are targets
   add-rule <real> <fiction>          Add a custom rewrite rule

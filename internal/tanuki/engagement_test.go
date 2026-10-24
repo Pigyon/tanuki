@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -356,5 +357,30 @@ func TestMappingValuesCannotCarryTheDelimiter(t *testing.T) {
 
 	if err := addMapping(engDir, mapCustom, "Project Phoenix", "Test Alpha"); err != nil {
 		t.Errorf("a valid rule was rejected: %v", err)
+	}
+}
+
+func TestParseArgs(t *testing.T) {
+	t.Parallel()
+
+	positional, org, err := parseArgs([]string{"one.com", "two.com", "--fiction-org", "ACME"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+
+	if !slices.Equal(positional, []string{"one.com", "two.com"}) {
+		t.Errorf("positional = %v, want both domains", positional)
+	}
+
+	if org != "ACME" {
+		t.Errorf("fictionOrg = %q", org)
+	}
+
+	// A mistyped option was skipped in silence, which is how a typo became a
+	// target that was never mapped.
+	for _, args := range [][]string{{"a.com", "--oops"}, {"a.com", "--fiction-org"}} {
+		if _, _, err := parseArgs(args); err == nil {
+			t.Errorf("parseArgs(%v) accepted a bad option", args)
+		}
 	}
 }
