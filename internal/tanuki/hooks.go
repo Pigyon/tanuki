@@ -11,8 +11,6 @@ import (
 // payload if hookEventName does not match exactly, so it is a constant.
 const eventPreToolUse = "PreToolUse"
 
-var isHookDryRun bool
-
 // emitNoop tells Claude Code the hook has nothing to say. Every path that
 // declines to act writes it, so the tool is never blocked.
 func emitNoop() {
@@ -47,24 +45,10 @@ func cmdHook(args []string) {
 	}()
 
 	if len(args) == 0 {
-		fatal("Usage: tanuki hook [--dry-run] pre-tool-use")
+		fatal("Usage: tanuki hook pre-tool-use")
 	}
 
-	var filtered []string
-
-	for _, a := range args {
-		if a == "--dry-run" {
-			isHookDryRun = true
-		} else {
-			filtered = append(filtered, a)
-		}
-	}
-
-	if len(filtered) == 0 {
-		fatal("Usage: tanuki hook [--dry-run] pre-tool-use")
-	}
-
-	switch filtered[0] {
+	switch args[0] {
 	case "pre-tool-use":
 		hookPreToolUse()
 	case "post-tool-use", "user-prompt-submit":
@@ -72,7 +56,7 @@ func cmdHook(args []string) {
 		// until the proxy's next start rewrites settings.json without them.
 		emitNoop()
 	default:
-		fatal("Unknown hook: " + filtered[0])
+		fatal("Unknown hook: " + args[0])
 	}
 }
 
@@ -166,10 +150,6 @@ func hookPreToolUse() {
 	if !changed {
 		emitNoop()
 		return
-	}
-
-	if isHookDryRun {
-		logger.Info("dry-run: would rewrite tool input", "tool", toolName)
 	}
 
 	// permissionDecision is omitted so rewriting the args does not also approve

@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+// findNewDomains returns the unmapped domains in text, which several
+// detection tests assert on.
+func findNewDomains(text, engDir string) []string {
+	return findNewTargets(engDir, []string{text}).domains
+}
+
 // Fixture targets used across the rewriting tests.
 const (
 	testBaseDomain = "amazon.com"

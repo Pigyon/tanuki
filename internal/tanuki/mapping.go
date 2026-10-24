@@ -1417,8 +1417,3 @@ func findNewTargets(engDir string, texts []string, extraIgnored ...string) scann
 
 	return found
 }
-
-// findNewDomains returns the domains in text that have no mapping yet.
-func findNewDomains(text, engDir string) []string {
-	return findNewTargets(engDir, []string{text}).domains
-}
