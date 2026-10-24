@@ -1471,7 +1471,10 @@ func hostContext(text string, start, end int) bool {
 
 	switch text[end] {
 	case '/':
-		return true
+		// A trailing slash is the weakest of the markers: "gopkg.in/yaml.v3",
+		// "./scripts/build.sh/" and "docs.rs/serde" are module and file paths,
+		// not hosts. Two labels need a scheme or an "@" instead.
+		return strings.Count(text[start:end], ".") >= 2
 	case ':':
 		return portThenPath(text, end+1)
 	default:
@@ -1506,11 +1509,47 @@ func portThenPath(text string, i int) bool {
 // so "using System.Net;", "self.network" and "buffer.at(i)" are hostnames by
 // shape alone, and mapping them rewrote the source the model was reading.
 func isDetectableHost(text, domain string, start, end int) bool {
+	if !worthAnOrgRule(extractOrgName(domain)) {
+		return false
+	}
+
 	if hostContext(text, start, end) {
 		return hasCommonTLD(domain) || isRealDomain(domain)
 	}
 
-	return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
+	return hasCommonTLD(domain) || deepEnoughToBeAHost(domain)
+}
+
+// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD when it
+// has three or more labels.
+//
+// Enumeration output is where targets arrive -- subfinder, nmap, httpx and
+// report tables list bare hostnames with no scheme, "@" or path around them --
+// and the curated list covers 72 of some 1500 real TLDs, so "api.target.in"
+// was invisible to detection and to the gate alike. Three labels is what
+// separates those from the two-label attribute access the curated list exists
+// to filter.
+//
+// A TLD that is also a common file extension is refused here: ".sh", ".py",
+// ".rs", ".md", ".zip" and ".mov" are all real, and "scripts/build.prod.sh" is
+// not a hostname.
+func deepEnoughToBeAHost(domain string) bool {
+	labels := strings.Split(domain, ".")
+	if len(labels) < 3 {
+		return false
+	}
+
+	if fileExtensionTLDs[labels[len(labels)-1]] {
+		return false
+	}
+
+	return isRealDomain(domain)
+}
+
+// fileExtensionTLDs are real TLDs that are far more often a file extension.
+var fileExtensionTLDs = map[string]bool{
+	"sh": true, "py": true, "rs": true, "md": true, "pl": true, "pm": true,
+	"so": true, "cc": true, "ml": true, "zip": true, "mov": true, "bat": true,
 }
 
 // scanned is what scanTargets found in one string.

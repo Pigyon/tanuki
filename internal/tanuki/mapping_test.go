@@ -519,6 +519,47 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 	}
 }
 
+// TestBareEnumerationOutputIsDetected: enumeration output is where targets
+// arrive, and it lists bare hostnames with no scheme, "@" or path around them.
+// The curated list covers 72 of some 1500 real TLDs, so a target on any other
+// was invisible to detection and to the gate alike -- a silent leak.
+func TestBareEnumerationOutputIsDetected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"api.target.in", "www.target.in", "staging.target.app", "vpn.target.site",
+		"host api.target.in is up", "| api.target.in | 200 |",
+		"Nmap scan report for api.target.in (203.0.113.5)",
+	} {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
+// TestDeepCodeTokensAreNotHosts is the other side: three labels is only a
+// signal when the last one is not a file extension and the registrable name is
+// not an everyday word.
+func TestDeepCodeTokensAreNotHosts(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"return item.data.id;", "const x = this.props.id", "self.config.ini",
+		"com.example.App", "org.apache.commons", "java.util.List",
+		"numpy.linalg.norm", "scripts/build.prod.sh", "tests/unit.api.py",
+		"a.b.md", "require gopkg.in/yaml.v3", "./scripts/build.sh/",
+		"url = docs.rs/serde/latest/",
+	} {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
 // TestUncommonTLDsStayFilteredAsBareTokens: an attribute access spells a real
 // TLD often enough (.id, .in, .it, .so) that a bare token on one must not be
 // taken for a domain, or the org rule then rewrites that word everywhere.
