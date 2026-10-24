@@ -17,7 +17,7 @@ const scopeFile = "scope.conf"
 // A domain in scope is a target and earns the derived org, email, path and
 // cloud mappings. A domain merely seen gets a hostname mapping and nothing
 // else, because an org rule rewrites an everyday word everywhere: one
-// docs.python.org in tool output turned "written in Python" into "written in
+// docs.pyframework.org in tool output turned "written in Pyframework" into "written in
 // DEVTARGET2". An empty scope treats every detected domain as a target.
 type scope []string
 

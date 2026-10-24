@@ -45,8 +45,15 @@ var builtinIgnored = []string{
 	// Package registries and documentation hosts: they appear in go.mod,
 	// package.json, imports and docs links on nearly every coding turn.
 	"golang.org", "go.dev", "gopkg.in", "pkg.go.dev",
-	"npmjs.com", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
+	"npmjs.com", "npmjs.org", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
 	"stackoverflow.com", "mozilla.org", "w3.org", "readthedocs.io",
+	"nuget.org", "packagist.org", "maven.apache.org", "apache.org",
+	"nodejs.org", "python.org", "rust-lang.org", "helm.sh", "k8s.io",
+	"schemas.android.com", "oracle.com", "letsencrypt.org",
+	// Container registries and forges, which appear in every Dockerfile,
+	// compose file and clone URL.
+	"docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.k8s.io",
+	"gitlab.com", "bitbucket.org",
 	// Reserved for documentation by RFC 2606; never a real target.
 	"example.com", "example.org", "example.net",
 }
@@ -181,15 +188,7 @@ func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, err
 	var err error
 
 	for _, domain := range found.domains {
-		var addErr error
-
-		if sc.isTarget(domain) {
-			addErr = addDomain(engDir, domain, "")
-		} else {
-			addErr = addHostOnlyDomain(engDir, domain)
-		}
-
-		if addErr != nil {
+		if addErr := mapOneDomain(engDir, sc, domain); addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
 		}
 	}
@@ -207,6 +206,28 @@ func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, err
 	}
 
 	return len(found.domains) + len(found.ips) + len(found.accounts), err
+}
+
+// mapOneDomain maps a detected domain, falling back to a hostname-only
+// mapping when the derived set conflicts with something already in the table.
+// A refusal here reaches anonymizeUpstreamBody and refuses the body, and since
+// Claude Code resends history that would refuse the conversation for good --
+// so the hostname, which is what actually hides the target, is worth keeping
+// even when the org name cannot be.
+func mapOneDomain(engDir string, sc scope, domain string) error {
+	if !sc.isTarget(domain) {
+		return addHostOnlyDomain(engDir, domain)
+	}
+
+	err := addDomain(engDir, domain, "")
+	if err == nil {
+		return nil
+	}
+
+	logger.Warn("mapping the target in full failed; mapping its hostname only",
+		"domain", domain, "error", err)
+
+	return addHostOnlyDomain(engDir, domain)
 }
 
 // residualTargets returns the real-looking values still present in text. It

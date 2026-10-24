@@ -44,7 +44,7 @@ func TestEmptyScopeTreatsEverythingAsTarget(t *testing.T) {
 	}
 }
 
-// TestOutOfScopeDomainGetsNoOrgRule is what scope is for: one docs.python.org
+// TestOutOfScopeDomainGetsNoOrgRule is what scope is for: one docs.pyframework.org
 // in tool output used to create an org rule for "python" and rewrite the word
 // everywhere, so "written in Python" reached the model as "written in
 // DEVTARGET2".
@@ -57,26 +57,26 @@ func TestOutOfScopeDomainGetsNoOrgRule(t *testing.T) {
 		t.Fatalf("addToScope: %v", err)
 	}
 
-	if _, err := mapTargets(engDir, nil, "check bounty.acme.com and docs.python.org"); err != nil {
+	if _, err := mapTargets(engDir, nil, "check bounty.acme.com and docs.pyframework.org"); err != nil {
 		t.Fatalf("mapping: %v", err)
 	}
 
 	for _, m := range loadMappings(engDir) {
-		if m.Type != mapDomain && m.Type != mapWildcard && strings.Contains(m.Real, "python") {
+		if m.Type != mapDomain && m.Type != mapWildcard && strings.Contains(m.Real, "pyframework") {
 			t.Errorf("out-of-scope domain got a derived mapping: %+v", m)
 		}
 	}
 
 	r2f, f2r := rewriters(t, engDir)
 
-	const text = "written in Python, see docs.python.org, scan bounty.acme.com"
+	const text = "written in Pyframework, see docs.pyframework.org, scan bounty.acme.com"
 
 	got := r2f.rewrite(text)
-	if !strings.Contains(got, "written in Python,") {
-		t.Errorf("the word Python was rewritten: %q", got)
+	if !strings.Contains(got, "written in Pyframework,") {
+		t.Errorf("the word Pyframework was rewritten: %q", got)
 	}
 
-	for _, host := range []string{"docs.python.org", "bounty.acme.com"} {
+	for _, host := range []string{"docs.pyframework.org", "bounty.acme.com"} {
 		if strings.Contains(got, host) {
 			t.Errorf("%s was not hidden: %q", host, got)
 		}

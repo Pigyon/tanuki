@@ -403,21 +403,20 @@ func mappingBound(typ string) boundKind {
 // "tanuki add" and an in-scope entry both bypass this: the operator saying a
 // domain is a target outranks the guess.
 var reservedOrgNames = map[string]bool{
-	"self": true, "this": true, "super": true, "system": true, "user": true,
-	"users": true, "admin": true, "data": true, "config": true, "options": true,
-	"option": true, "buffer": true, "template": true, "example": true,
-	"socket": true, "server": true, "client": true, "request": true,
-	"response": true, "session": true, "context": true, "object": true,
-	"module": true, "package": true, "import": true, "export": true,
-	"default": true, "value": true, "result": true, "error": true,
-	"string": true, "number": true, "index": true, "item": true, "items": true,
-	"name": true, "type": true, "class": true, "props": true, "state": true,
-	"store": true, "cache": true, "queue": true, "event": true, "hello": true,
-	"world": true, "test": true, "tests": true, "spec": true, "build": true,
-	"main": true, "app": true, "api": true, "web": true, "src": true,
-	"lib": true, "docs": true, "doc": true, "file": true, "files": true,
-	"path": true, "node": true, "core": true, "base": true, "util": true,
-	"utils": true, "common": true, "shared": true, "local": true, "global": true,
+	// Receivers, scopes and language keywords.
+	"self": true, "this": true, "super": true, "window": true, "global": true,
+	"module": true, "exports": true, "package": true, "namespace": true,
+	// Objects a program names constantly.
+	"console": true, "process": true, "buffer": true, "socket": true,
+	"request": true, "response": true, "session": true, "context": true,
+	"options": true, "option": true, "config": true, "settings": true,
+	"params": true, "args": true, "props": true, "state": true, "system": true, "user": true, "users": true, "admin": true, "client": true,
+	"server": true, "object": true, "instance": true, "template": true,
+	"metadata": true, "labels": true, "trace": true, "span": true,
+	"stack": true, "chars": true, "model": true, "schema": true,
+	"result": true, "error": true, "errors": true, "event": true, "events": true,
+	"test": true, "tests": true, "spec": true, "mock": true, "fixture": true,
+	"util": true, "utils": true, "helper": true, "helpers": true,
 }
 
 // worthAnOrgRule reports whether a detected domain's registrable name is
@@ -719,7 +718,11 @@ func addCustomRule(engDir, realVal, fiction string) (bool, error) {
 		return false, nil
 	}
 
-	return true, addMapping(engDir, mapCustom, realVal, fiction)
+	if err := addMapping(engDir, mapCustom, realVal, fiction); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 var mappingTypes = map[string]bool{
@@ -1153,47 +1156,118 @@ func appendMappings(engDir string, entries []mappingEntry) error {
 	return appendToFile(filepath.Join(engDir, "mappings.conf"), strings.Join(lines, "\n"))
 }
 
-// checkTableConflicts refuses an addition whose fiction holds another
-// mapping's real value, or whose real value is held by another's fiction.
+// rewritePass is the order the rewriter applies a mapping in: the automaton
+// first, org rules after it. A value the automaton introduces is still seen by
+// the org pass, so it is not a conflict; one introduced after its own pass has
+// run survives into the body.
+func rewritePass(typ string) int {
+	if typ == mapOrg {
+		return 1
+	}
+
+	return 0
+}
+
+// checkTableConflicts refuses an addition that would leave a mapped value in
+// the rewritten body, which makes the gate refuse every body naming it -- for
+// the rest of the engagement, since Claude Code resends history.
 //
-// The rewrite takes the longest non-overlapping match, so it replaces
-// "AcmeBank" and never looks at the "Bank" its own replacement introduced. The
-// gate scans for every match, finds it, and refuses the body -- for the rest
-// of the engagement, since the history comes back every turn. Both mappings
-// are sound on their own, so checking a mapping against itself cannot see it.
+// Only a value no later pass will clean up counts. Modelling that matters:
+// without it, "tanuki add widgetco.com" was refused because an unrelated
+// custom rule's fiction said "WidgetCo", which the org pass rewrites anyway.
+//
+// The error names no value. It reaches the client, which folds it into the
+// next prompt, and a bare org name is not domain-shaped so nothing downstream
+// would catch it.
 func checkTableConflicts(existing, added []mappingEntry) error {
 	all := slices.Concat(existing, added)
 
-	machine := newResidueMachine(all)
+	for _, m := range added {
+		if found := residualTargets(nil, m.Fiction); len(found) > 0 {
+			logger.Warn("refusing a fiction the leak check would flag",
+				"type", m.Type, "fiction", m.Fiction, "looks_like", found)
+
+			return fmt.Errorf("the fiction for this %s mapping looks like a real target; "+
+				"the gate would refuse every body naming it (see the tanuki log)", m.Type)
+		}
+	}
+
+	// Only org and custom values are what the gate scans a rewritten body for
+	// (see survivors), so only an addition of one can create this conflict.
+	// Skipping otherwise keeps the auto-map path off an O(table) check it can
+	// run thousands of times in one body.
+	if !slices.ContainsFunc(added, func(m mappingEntry) bool {
+		return m.Type == mapOrg || m.Type == mapCustom
+	}) {
+		return nil
+	}
+
+	machine, owners := newConflictMachine(all)
 	if machine == nil {
 		return nil
 	}
 
-	addedReal := map[string]bool{}
-	for _, m := range added {
-		addedReal[strings.ToLower(m.Real)] = true
-	}
-
 	for _, m := range all {
-		for _, hit := range machine.find(m.Fiction) {
-			held := strings.ToLower(machine.patterns[hit.index])
+		isNew := slices.Contains(added, m)
 
-			isSelf := held == strings.ToLower(m.Real)
-			if isSelf || (!addedReal[held] && !containsEntry(added, m)) {
+		for _, hit := range machine.find(m.Fiction) {
+			held := owners[hit.index]
+
+			sameValue := strings.EqualFold(held.Real, m.Real)
+			if sameValue || rewritePass(held.Type) > rewritePass(m.Type) {
 				continue
 			}
 
-			return fmt.Errorf(
-				"mapping %q -> %q: the fiction holds %q, which is mapped too; "+
-					"the gate would refuse every body naming it", m.Real, m.Fiction, held)
+			if !isNew && !slices.ContainsFunc(added, func(a mappingEntry) bool {
+				return strings.EqualFold(a.Real, held.Real)
+			}) {
+				continue
+			}
+
+			logger.Warn("refusing a mapping whose fiction holds another mapped value",
+				"real", m.Real, "fiction", m.Fiction, "holds", held.Real)
+
+			return fmt.Errorf("this %s mapping's fiction holds another mapped value; "+
+				"the gate would refuse every body naming it (see the tanuki log)", m.Type)
 		}
 	}
 
 	return nil
 }
 
-func containsEntry(entries []mappingEntry, m mappingEntry) bool {
-	return slices.Contains(entries, m)
+// newConflictMachine matches every mapped real value with the bound its own
+// mapping uses, and reports which mapping each pattern came from.
+func newConflictMachine(all []mappingEntry) (*acMachine, []mappingEntry) {
+	var (
+		patterns []string
+		bounds   []boundKind
+		owners   []mappingEntry
+	)
+
+	for _, m := range all {
+		// The gate scans a rewritten body for these two only.
+		if m.Type != mapOrg && m.Type != mapCustom || m.Real == "" {
+			continue
+		}
+
+		bound := mappingBound(m.Type)
+		if m.Type == mapOrg {
+			bound = boundWord
+			if len(m.Real) >= minOrgPartLen {
+				bound = boundWordPart
+			}
+		}
+
+		patterns = append(patterns, m.Real)
+		bounds = append(bounds, bound)
+		owners = append(owners, m)
+	}
+
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	return newACMachine(patterns, patterns, bounds), owners
 }
 
 func addIPMapping(engDir, ip string) error {
@@ -1573,7 +1647,16 @@ func isRealDomain(domain string) bool {
 // uncommon TLD is far more often code than a domain, so it needs one of these
 // markers.
 func hostContext(text string, start, end int) bool {
-	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
+	pre := text[:start]
+
+	if strings.HasSuffix(pre, "://") {
+		return true
+	}
+
+	// "user@host" is an address; a bare "@host" at the start of a line is a
+	// Ruby instance variable or a decorator, and "@order.customer.email" was
+	// being mapped as a hostname.
+	if strings.HasSuffix(pre, "@") && len(pre) > 1 && isAlnumByte(pre[len(pre)-2]) {
 		return true
 	}
 
@@ -1583,9 +1666,13 @@ func hostContext(text string, start, end int) bool {
 
 	switch text[end] {
 	case '/':
-		// A trailing slash is the weakest of the markers: "gopkg.in/yaml.v3",
-		// "./scripts/build.sh/" and "docs.rs/serde" are module and file paths,
-		// not hosts. Two labels need a scheme or an "@" instead.
+		// The weakest marker: "gopkg.in/yaml.v3" and "docs.rs/serde" are module
+		// paths, so two labels need a scheme or an "@" instead. A digit after
+		// the slash is division -- "obj.data.app/2" -- not a path.
+		if end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9' {
+			return false
+		}
+
 		return strings.Count(text[start:end], ".") >= 2
 	case ':':
 		return portThenPath(text, end+1)
@@ -1612,113 +1699,73 @@ func portThenPath(text string, i int) bool {
 	return digits > 0 && digits <= 5 && i+digits < len(text) && text[i+digits] == '/'
 }
 
-// isDetectableHost reports whether the token at [start,end) is a hostname
-// rather than something code is made of.
+// hostInMatch returns the hostname inside a regex match, which can be shorter
+// than the match itself. Prose that drops the space after a full stop glues
+// the next sentence on -- "Our scope is target.com.We enumerated 42 hosts" --
+// and the greedy pattern swallows it, so the whole token failed every test and
+// the target was missed by detection and by the gate alike.
 //
-// Where the surroundings say it is a host, any real TLD counts and the name is
-// not second-guessed: hoisting the everyday-word check above this made
-// "https://admin.global.com/login" and "admin@core.ac.uk" invisible to
-// detection and to the gate, because "global" and "core" are ordinary words.
-// A bare token has no such marker, so there the name has to carry it.
+// Trailing labels are dropped one at a time and each prefix retried; a shorter
+// prefix has to carry a curated TLD, so "java.net.Socket" does not hand back
+// "java.net".
+func hostInMatch(text string, from, to int) string {
+	full := strings.ToLower(text[from:to])
+	if isDetectableHost(text, full, from, to) {
+		return full
+	}
+
+	for end := strings.LastIndexByte(full, '.') + from; end > from; end = strings.LastIndexByte(text[from:end], '.') + from {
+		candidate := strings.ToLower(text[from:end])
+		if hasCommonTLD(candidate) && isDetectableHost(text, candidate, from, end) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+// codeKeywords introduce a module path, not a host.
+var codeKeywords = []string{"import ", "from ", "using ", "require ", "package ", "namespace ", "extern "}
+
+// precededByCodeKeyword reports whether the token at start follows a keyword
+// that introduces a module path: "from scipy.io import loadmat" names a Python
+// module, not a site on Cocos Islands.
+func precededByCodeKeyword(text string, start int) bool {
+	const lead = 16
+
+	before := strings.ToLower(text[max(0, start-lead):start])
+
+	return slices.ContainsFunc(codeKeywords, func(kw string) bool {
+		return strings.HasSuffix(before, kw)
+	})
+}
+
+// isDetectableHost reports whether the token at [start,end) is a hostname.
+//
+// A bare token needs a TLD from the curated list. Any other real TLD needs the
+// surroundings to say it is a host: after "://" or "@", or with a path right
+// after it. Accepting a bare token on any ICANN suffix because it had three or
+// more labels was tried and withdrawn -- attribute chains reach real TLDs
+// constantly ("module.exports.app", "self.model.fit",
+// "spec.template.metadata.labels.app"), and no reading of the surrounding line
+// separated them from enumeration output without either mangling source or
+// missing the output it was added for. A target on an uncommon TLD needs
+// "tanuki add" or a scope entry; "tanuki verify" finds one in a draft report.
+//
+// The registrable name is deliberately not consulted here. It decides whether
+// a target earns an org rule, which rewrites a bare word everywhere, and
+// scope.isTarget makes that call. Letting it veto the host decision hid
+// "store.com" and "core.ac.uk" from detection and from the gate.
 func isDetectableHost(text, domain string, start, end int) bool {
+	if precededByCodeKeyword(text, start) {
+		return false
+	}
+
 	if hostContext(text, start, end) {
 		return hasCommonTLD(domain) || isRealDomain(domain)
 	}
 
-	if !worthAnOrgRule(extractOrgName(domain)) {
-		return false
-	}
-
-	return hasCommonTLD(domain) || deepEnoughToBeAHost(text, domain, start, end)
-}
-
-// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD only
-// when it stands alone on its line, which is what enumeration output is:
-// subfinder, amass, dnsx and httpx print one host per line.
-//
-// Three labels on their own are not a hostname signal. Attribute chains reach
-// real TLDs constantly -- ".app", ".id", ".at", ".name", ".email", ".run",
-// ".new", ".top" are all delegated -- so "module.exports.app",
-// "self.model.fit", "event.target.id" and "spec.template.labels.app" were
-// mapped, with wildcards, and the model was then shown "localhost:9004 = app;"
-// for the rest of the engagement.
-func deepEnoughToBeAHost(text, domain string, start, end int) bool {
-	labels := strings.Split(domain, ".")
-	if len(labels) < 3 || fileExtensionTLDs[labels[len(labels)-1]] {
-		return false
-	}
-
-	return isRealDomain(domain) && standsAsHostField(text, start, end)
-}
-
-// standsAsHostField reports whether text[start:end] is a field on a line that
-// reads as tool output rather than code. Enumeration and scan output put a
-// host in its own column ("api.target.in", "host api.target.in is up",
-// "| api.target.in | 200 |"); code puts an attribute chain in an expression,
-// which the punctuation gives away.
-func standsAsHostField(text string, start, end int) bool {
-	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
-
-	lineEnd := strings.IndexByte(text[end:], '\n')
-	if lineEnd < 0 {
-		lineEnd = len(text)
-	} else {
-		lineEnd += end
-	}
-
-	if lineLooksLikeCode(text[lineStart:lineEnd]) {
-		return false
-	}
-
-	return isFieldEdge(text, start-1) && isFieldEdge(text, end)
-}
-
-// isFieldEdge reports whether the byte at i separates columns, or is off the
-// end of the text.
-func isFieldEdge(text string, i int) bool {
-	if i < 0 || i >= len(text) {
-		return true
-	}
-
-	switch text[i] {
-	case ' ', '\t', '\r', '\n', '|', ',':
-		return true
-	default:
-		return false
-	}
-}
-
-// numericParens is a parenthesised group holding only a number or an address,
-// as "Nmap scan report for api.target.in (203.0.113.5)" has. That is a column,
-// not a call, so it does not make the line code.
-var numericParens = regexp.MustCompile(`\([0-9.:\s]+\)`)
-
-// lineLooksLikeCode reports whether a line carries the punctuation of an
-// expression. A colon counts unless a digit follows it, which is a port.
-func lineLooksLikeCode(line string) bool {
-	line = numericParens.ReplaceAllString(line, " ")
-
-	for i := range len(line) {
-		switch line[i] {
-		case '=', ';', '(', ')', '{', '}', '[', ']', '\'', '"', '`', '<', '>':
-			return true
-		case ':':
-			if i+1 >= len(line) || line[i+1] < '0' || line[i+1] > '9' {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// fileExtensionTLDs are real TLDs that are far more often a file extension. A
-// bare token ending in one is not read as a host, so a genuine target on one
-// (.md is Moldova, .cc Cocos, .ml Mali, .so Somalia) needs a URL, an "@", or
-// "tanuki add".
-var fileExtensionTLDs = map[string]bool{
-	"sh": true, "py": true, "rs": true, "md": true, "pl": true, "pm": true,
-	"so": true, "cc": true, "ml": true, "zip": true, "mov": true, "bat": true,
+	return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
 }
 
 // scanned is what scanTargets found in one string.
@@ -1741,15 +1788,13 @@ func scanTargets(text string) scanned {
 	seen := make(map[string]bool)
 
 	for _, loc := range domainRegex.FindAllStringIndex(text, -1) {
-		domain := strings.ToLower(text[loc[0]:loc[1]])
-		if seen[domain] {
+		domain := hostInMatch(text, loc[0], loc[1])
+		if domain == "" || seen[domain] {
 			continue
 		}
 
-		if isDetectableHost(text, domain, loc[0], loc[1]) {
-			seen[domain] = true
-			s.domains = append(s.domains, domain)
-		}
+		seen[domain] = true
+		s.domains = append(s.domains, domain)
 	}
 
 	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {
