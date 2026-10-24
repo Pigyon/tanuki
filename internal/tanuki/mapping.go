@@ -347,6 +347,13 @@ func mappingBound(typ string) boundKind {
 	case "account":
 		// Not inside a longer run of digits or an identifier.
 		return boundWord
+	case "ip":
+		// Reversing an address glued to more digits built a different one:
+		// with 127.0.0.3 mapped, "127.0.0.35" became "52.94.236.2485", and
+		// where that lands on a valid address a tool goes to a host that is
+		// not in scope. Only the f2r direction reaches here; r2f matches an
+		// address through findIPs, which already requires it to stand alone.
+		return boundAddress
 	}
 
 	return boundNone

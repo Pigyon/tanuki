@@ -790,6 +790,36 @@ func TestIPv6AfterAColonIsDetected(t *testing.T) {
 	}
 }
 
+// TestFictionIPReversalRequiresAWholeAddress: reversing a fiction IP glued to
+// more digits built a different address, and where that lands on a valid one a
+// tool is sent to a host outside the engagement.
+func TestFictionIPReversalRequiresAWholeAddress(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	if err := addIPMapping(engDir, testPublicIP); err != nil {
+		t.Fatalf("addIPMapping: %v", err)
+	}
+
+	r2f, f2r := rewriters(t, engDir)
+
+	fiction := r2f.rewrite(testPublicIP)
+	if fiction == testPublicIP {
+		t.Fatal("IP was not mapped")
+	}
+
+	if got := f2r.rewrite("nmap " + fiction); got != "nmap "+testPublicIP {
+		t.Errorf("whole address did not reverse: %q", got)
+	}
+
+	for _, in := range []string{fiction + "5", fiction + ".1", "10" + fiction, fiction + "a"} {
+		if got := f2r.rewrite(in); got != in {
+			t.Errorf("reversed inside a longer address: %q -> %q", in, got)
+		}
+	}
+}
+
 func TestIPCounterRoundTrip(t *testing.T) {
 	t.Parallel()
 

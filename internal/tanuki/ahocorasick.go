@@ -35,6 +35,9 @@ const (
 	// boundWord needs a non-word character or the edge of the text on both
 	// sides, as the regexp \b does.
 	boundWord
+	// boundAddress refuses a match that is glued to a character an address
+	// can continue with, so a mapped IP is not found inside a longer one.
+	boundAddress
 	// boundWordPart also accepts the edges of one part of a compound
 	// identifier, so an org name is found in "acme_prod", "AcmeCloud" and
 	// "getACMEToken" rather than only where it stands alone.
@@ -228,6 +231,23 @@ func domainContinues(text string, i int) bool {
 	return isLabelByte(text[i])
 }
 
+// addressContinues reports whether the byte at i could carry on an IP
+// address, so a match ending (or starting) there is part of a longer one.
+func addressContinues(text string, i int) bool {
+	if i < 0 || i >= len(text) {
+		return false
+	}
+
+	b := text[i]
+
+	switch {
+	case b >= '0' && b <= '9', b >= 'a' && b <= 'f', b >= 'A' && b <= 'F':
+		return true
+	default:
+		return b == '.' || b == ':'
+	}
+}
+
 // keepBounded discards the matches whose surroundings their pattern's bound
 // rules out. It runs before the longest match is chosen, so a longer pattern
 // that fails its bound leaves the way clear for a shorter one that holds.
@@ -263,6 +283,8 @@ func (m *acMachine) isBounded(text string, match acMatch) bool {
 		return !domainContinues(text, match.end)
 	case boundWord:
 		return wordEdge(text, match.start) && wordEdge(text, match.end)
+	case boundAddress:
+		return !addressContinues(text, match.start-1) && !addressContinues(text, match.end)
 	case boundWordPart:
 		return partEdge(text, match.start) && partEdge(text, match.end)
 	case boundNone:
