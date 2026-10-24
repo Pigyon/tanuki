@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"slices"
 	"strings"
 	"syscall"
@@ -167,7 +168,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	_ = r.Body.Close()
 
-	isMessagesPath := strings.HasPrefix(r.URL.Path, "/v1/messages")
+	isMessagesPath := isMessagesRequest(r.URL.Path)
 
 	if isMessagesPath && len(body) > 0 {
 		anonymized, err := anonymizeUpstreamBody(body)
@@ -227,6 +228,17 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		forwardWithRewrite(w, resp, responseRewriter())
 	}
+}
+
+// isMessagesRequest reports whether path addresses the Messages API, which is
+// the traffic carrying prompts. The path is normalized and compared without
+// case first: "//v1/messages", "/v1/../v1/messages" and "/V1/messages" all
+// reach the same upstream endpoint, and each one used to skip anonymization
+// and forward the prompt verbatim.
+func isMessagesRequest(p string) bool {
+	clean := path.Clean("/" + strings.TrimLeft(p, "/"))
+
+	return strings.HasPrefix(strings.ToLower(clean), "/v1/messages")
 }
 
 // copyProxyHeaders copies non-hop-by-hop headers from src to dst, dropping
