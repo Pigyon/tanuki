@@ -193,7 +193,10 @@ those domains as targets while anything else it detects is merely hidden:
 ```
 
 Adding a domain to the scope promotes it even if it was already mapped, so you
-can set the scope part-way through an engagement.
+can set the scope part-way through an engagement. Removing one stops new domains
+earning an org name, but keeps the mappings already made: the model has been
+shown those fictions, so dropping them would leave its earlier replies
+unreversible.
 
 | | In scope | Detected, out of scope |
 | --- | --- | --- |

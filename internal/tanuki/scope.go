@@ -213,6 +213,7 @@ func cmdScope(args []string) {
 		scopeChange(engDir, args[1:], addToScope, "Added to scope", "Already in scope")
 	case "rm":
 		scopeChange(engDir, args[1:], removeFromScope, "Removed from scope", "Not in scope")
+		warnOrphanedDerived(engDir, args[1:])
 	default:
 		fatal("Usage: tanuki scope [list | add <domain> | rm <domain>]")
 	}
@@ -250,4 +251,45 @@ func showScope(engDir string) {
 	for _, p := range current {
 		fmt.Printf("  %s and *.%s\n", p, p)
 	}
+}
+
+// warnOrphanedDerived says which derived mappings a removed pattern leaves
+// behind. They are not deleted: the model has already been shown those
+// fictions, and dropping them would leave its earlier replies unreversible.
+func warnOrphanedDerived(engDir string, args []string) {
+	if len(args) == 0 {
+		return
+	}
+
+	removed := scope{normalizeScopePattern(args[0])}
+	mappings := loadMappings(engDir)
+
+	// The org names belonging to domains the pattern covered.
+	orgs := map[string]bool{}
+
+	for _, m := range mappings {
+		if m.Type == mapDomain && removed.covers(m.Real) {
+			orgs[strings.ToLower(extractOrgName(m.Real))] = true
+		}
+	}
+
+	var orphaned []string
+
+	for _, m := range mappings {
+		if m.Type == mapOrg && orgs[m.Real] {
+			orphaned = append(orphaned, m.Real)
+		}
+	}
+
+	if len(orphaned) == 0 {
+		return
+	}
+
+	fmt.Println("[tanuki] Mappings already created for it are kept, so earlier replies still reverse:")
+
+	for _, name := range orphaned {
+		fmt.Printf("  org %q is still rewritten\n", name)
+	}
+
+	fmt.Println("[tanuki] Start a new engagement if it must stop being rewritten.")
 }

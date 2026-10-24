@@ -1383,6 +1383,23 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 	return ipMatch{}, false
 }
 
+// versionLead is how far back precededByVersion looks for the word.
+const versionLead = 24
+
+// precededByVersion reports whether the token at i is introduced by the word
+// "version". A four-part version string is shaped exactly like an address --
+// "<AssemblyVersion>1.0.0.0</…>", `"version": "4.17.21.1"` -- and nothing in
+// the number itself tells them apart. Where the text says which it is, take
+// its word; "upgraded from 1.2.3.4" still reads as an address.
+func precededByVersion(text string, i int) bool {
+	from := max(0, i-versionLead)
+
+	lead := strings.ToLower(text[from:i])
+	lead = strings.TrimLeft(strings.TrimRight(lead, " \t\"'>=:"), " \t")
+
+	return strings.HasSuffix(lead, "version") || strings.HasSuffix(lead, "ver")
+}
+
 func isAlnumByte(b byte) bool {
 	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
@@ -1604,6 +1621,10 @@ func scanTargets(text string) scanned {
 	}
 
 	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {
+		if precededByVersion(text, m.start) {
+			continue
+		}
+
 		if !isPrivateIP(m.ip) && !seen[m.ip] {
 			seen[m.ip] = true
 			s.ips = append(s.ips, m.ip)

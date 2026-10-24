@@ -952,6 +952,31 @@ func TestAddressAfterALabelIsFound(t *testing.T) {
 	}
 }
 
+// TestVersionStringsAreNotAddresses: a four-part version is shaped exactly
+// like an address, and nothing in the number tells them apart. Where the text
+// says which it is, take its word.
+func TestVersionStringsAreNotAddresses(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"<AssemblyVersion>1.0.0.0</AssemblyVersion>",
+		`"version": "4.17.21.1"`,
+		"version=1.2.3.4",
+		"nginx version 1.2.3.4",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+
+	// Without that word it is read as an address, which is the safe default.
+	for _, text := range []string{"ping 203.0.113.5", "host 8.8.8.8", "upgraded to 1.2.3.5"} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
 // TestLinkLocalAddressesAreNotTargets: fe80::/10 identifies an interface, not
 // a host anyone can route to.
 func TestLinkLocalAddressesAreNotTargets(t *testing.T) {
