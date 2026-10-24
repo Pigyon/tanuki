@@ -972,7 +972,7 @@ func showMappings() error {
 
 var (
 	ipv4Regex = regexp.MustCompile(`\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b`)
-	// Deliberately greedy: longestValidIP validates each candidate, and
+	// Deliberately greedy: findIPs validates each candidate, and
 	// under-matching would leave part of a real address unmapped (a leak).
 	ipv6Regex = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}(?:\.\d{1,3}){0,3}`)
 )
@@ -1011,11 +1011,47 @@ func stripLeadingZerosV4(s string) string {
 	return strings.Join(parts, ".")
 }
 
-// longestValidIP returns the canonical form of the longest IP prefix of
-// candidate, or "" if none parses (trimming trailing junk from a greedy match).
-func longestValidIP(candidate string) string {
-	ip, _ := longestValidIPPrefix(candidate)
-	return ip
+// ipMatch is one address found in text: its canonical form and its span.
+type ipMatch struct {
+	ip         string
+	start, end int
+}
+
+// findIPs returns the addresses re finds in text. A candidate is trimmed to
+// its longest valid prefix, loses a single leading colon ("ip:2001:db8::1"
+// otherwise never parsed), and must stand alone: a letter, digit or "_" on
+// either side means it is part of a longer token, such as the "::1234" the
+// greedy pattern finds in "arn:aws:iam::123456789012", the "f::de" in Rust's
+// "Self::de", or the "1.2.3.45" in "1.2.3.456".
+func findIPs(text string, re *regexp.Regexp) []ipMatch {
+	var found []ipMatch
+
+	for _, loc := range re.FindAllStringIndex(text, -1) {
+		start := loc[0]
+		if strings.HasPrefix(text[start:loc[1]], ":") && !strings.HasPrefix(text[start:loc[1]], "::") {
+			start++
+		}
+
+		ip, n := longestValidIPPrefix(text[start:loc[1]])
+		if n == 0 || !standsAlone(text, start, start+n) {
+			continue
+		}
+
+		found = append(found, ipMatch{ip: ip, start: start, end: start + n})
+	}
+
+	return found
+}
+
+// standsAlone reports whether text[start:end] is not glued to a letter, digit
+// or "_" on either side.
+func standsAlone(text string, start, end int) bool {
+	glued := func(r rune) bool { return isAlnum(r) || r == '_' }
+
+	before, _, _ := around(text, start)
+	_, after, _ := around(text, end)
+
+	return !glued(before) && !glued(after)
 }
 
 func longestValidIPPrefix(candidate string) (canonical string, prefixLen int) {
@@ -1041,27 +1077,20 @@ func (rw *rewriter) rewriteIPs(text string) string {
 }
 
 func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
-	locs := re.FindAllStringIndex(text, -1)
-	if locs == nil {
-		return text
-	}
-
 	var b strings.Builder
 
 	pos := 0
 
-	for _, loc := range locs {
-		ip, n := longestValidIPPrefix(text[loc[0]:loc[1]])
-
-		fiction, ok := rw.ipFictions[ip]
-		if n == 0 || !ok {
+	for _, m := range findIPs(text, re) {
+		fiction, ok := rw.ipFictions[m.ip]
+		if !ok {
 			continue
 		}
 
-		b.WriteString(text[pos:loc[0]])
+		b.WriteString(text[pos:m.start])
 		b.WriteString(fiction)
 
-		pos = loc[0] + n
+		pos = m.end
 	}
 
 	if pos == 0 {
@@ -1111,10 +1140,10 @@ func scanTargets(text string) scanned {
 		}
 	}
 
-	for _, candidate := range slices.Concat(ipv4Regex.FindAllString(text, -1), ipv6Regex.FindAllString(text, -1)) {
-		if ip := longestValidIP(candidate); ip != "" && !isPrivateIP(ip) && !seen[ip] {
-			seen[ip] = true
-			s.ips = append(s.ips, ip)
+	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {
+		if !isPrivateIP(m.ip) && !seen[m.ip] {
+			seen[m.ip] = true
+			s.ips = append(s.ips, m.ip)
 		}
 	}
 

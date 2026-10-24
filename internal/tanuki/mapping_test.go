@@ -705,6 +705,41 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 	}
 }
 
+// TestIPsMustStandAlone: the greedy patterns found addresses inside longer
+// tokens. An AWS ARN's "iam::1234..." became the IPv6 "::1234" and was mapped,
+// leaving the rest of the account ID in clear; Rust paths ("Self::de") and a
+// version string ("1.2.3.456") did the same.
+func TestIPsMustStandAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"arn:aws:iam::123456789012:role/x",
+		"Self::de and Foo::bar",
+		"v=1.2.3.456",
+		"ip2001:db8::1",
+	} {
+		if _, ips := targetsIn(text); len(ips) > 0 {
+			t.Errorf("targetsIn(%q) found addresses %v", text, ips)
+		}
+	}
+}
+
+// TestIPv6AfterAColonIsDetected: a single colon before an address ("ip:...")
+// made every prefix of the greedy match invalid, so it was never detected.
+func TestIPv6AfterAColonIsDetected(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"ip:2001:4860:1::1",
+		"[2001:4860::8888]:443",
+		"inet6 2001:4860::8888/64",
+	} {
+		if _, ips := targetsIn(text); len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
 func TestIPCounterRoundTrip(t *testing.T) {
 	t.Parallel()
 
