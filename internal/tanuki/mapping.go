@@ -1226,50 +1226,51 @@ type ipMatch struct {
 	start, end int
 }
 
-// findIPs returns the addresses re finds in text. A candidate is trimmed to
-// its longest valid prefix, loses a single leading colon ("ip:2001:db8::1"
-// otherwise never parsed), and must stand alone -- a letter, digit or "_" on
-// either side means it belongs to a longer token, like the "::1234" inside
-// "arn:aws:iam::123456789012" or the "1.2.3.45" inside "1.2.3.456".
+// findIPs returns the addresses re finds in text.
 func findIPs(text string, re *regexp.Regexp) []ipMatch {
 	var found []ipMatch
 
 	for _, loc := range re.FindAllStringIndex(text, -1) {
-		start := loc[0]
-		if strings.HasPrefix(text[start:loc[1]], ":") && !strings.HasPrefix(text[start:loc[1]], "::") {
-			start++
+		if m, ok := ipAt(text, loc[0], loc[1]); ok {
+			found = append(found, m)
 		}
-
-		ip, n := longestValidIPPrefix(text[start:loc[1]])
-		if n == 0 || !standsAlone(text, start, start+n) {
-			continue
-		}
-
-		found = append(found, ipMatch{ip: ip, start: start, end: start + n})
 	}
 
 	return found
 }
 
-// standsAlone reports whether text[start:end] is a whole address rather than a
-// slice of a longer token.
+// ipAt returns the address inside the span [from,to).
 //
-// A letter in front means the match is part of a word: "f::de" in Rust's
-// "Self::de", or the "::1234" the greedy pattern finds in "iam::123456789012".
-// A hex digit behind means the trim cut a longer run in half, which is the
-// other half of the same ARN. Everything else is punctuation an address is
-// written next to, so "dump_2001:db8::1.pcap" and "2001:db8::1_old" are still
-// found -- requiring a non-word character on both sides missed those.
-func standsAlone(text string, start, end int) bool {
-	if start > 0 && isASCIILetter(text[start-1]) {
-		return false
+// The patterns are greedy and can begin partway into a word: in
+// "IPv6:2001:db8::1" the leftmost match starts at the "6" of "IPv6" and covers
+// "6:2001:db8::1", itself a valid address. Rejecting the span for that dropped
+// the real address from detection and from the gate alike, so each start is
+// tried until one is not glued to the end of a word.
+//
+// A start is viable when the character in front of it is not alphanumeric, so
+// punctuation an address is written next to still counts:
+// "dump_2001:db8::1.pcap", "[2001:db8::1]", "ip:2001:db8::1". The end must not
+// run into a hex digit, which keeps "::1234" out of "iam::123456789012" and
+// "1.2.3.45" out of "1.2.3.456".
+func ipAt(text string, from, to int) (ipMatch, bool) {
+	for start := from; start < to; start++ {
+		if start > 0 && isAlnumByte(text[start-1]) {
+			continue
+		}
+
+		ip, n := longestValidIPPrefix(text[start:to])
+		if n == 0 || addressContinuesAt(text, start+n) {
+			continue
+		}
+
+		return ipMatch{ip: ip, start: start, end: start + n}, true
 	}
 
-	return !addressContinuesAt(text, end)
+	return ipMatch{}, false
 }
 
-func isASCIILetter(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+func isAlnumByte(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
 func isHexDigit(b byte) bool {

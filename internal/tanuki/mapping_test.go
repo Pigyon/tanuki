@@ -818,11 +818,16 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 func TestIPsMustStandAlone(t *testing.T) {
 	t.Parallel()
 
+	// "ip2001:db8::1" is deliberately absent: a label running straight into an
+	// address with no separator is indistinguishable from "IPv6:2001:db8::1",
+	// which is a form tools really produce. The scan takes the first start
+	// that is not glued to a word, so this yields the partial "db8::1" -- a
+	// useless mapping for an input nothing writes, which is the cheaper half
+	// of the trade.
 	for _, text := range []string{
 		"arn:aws:iam::123456789012:role/x",
 		"Self::de and Foo::bar",
 		"v=1.2.3.456",
-		"ip2001:db8::1",
 	} {
 		if ips := targetsIn(text).ips; len(ips) > 0 {
 			t.Errorf("targetsIn(%q) found addresses %v", text, ips)
@@ -840,6 +845,24 @@ func TestAddressNextToPunctuationIsStillFound(t *testing.T) {
 	for _, text := range []string{
 		"2001:db8::1_old", "dump_2001:db8::1.pcap",
 		"[2001:db8::1]:443", "(2001:db8::1)", "=2001:db8::1",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestAddressAfterALabelIsFound: the patterns are greedy and can begin
+// partway into a word, so "IPv6:2001:db8::1" matched from the "6" of "IPv6".
+// Rejecting that span dropped the real address from detection and from the
+// gate, which is a silent leak rather than a refusal.
+func TestAddressAfterALabelIsFound(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"IPv6:2001:db8::1", "IPV6:2001:db8::1", "eth0:2001:db8::1",
+		"v6:2001:db8::1", "inet6:2001:db8::1",
+		"nmap: IPv6:2600:1f18:dead:beef::5 open",
 	} {
 		if ips := targetsIn(text).ips; len(ips) != 1 {
 			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
