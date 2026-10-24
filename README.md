@@ -38,6 +38,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
 - [Verifying an engagement](#verifying-an-engagement)
+- [If Claude Code stops connecting](#if-claude-code-stops-connecting)
 - [Known limitations](#known-limitations)
 - [Fail-closed behaviour](#fail-closed-behaviour)
 - [Disclaimer](#disclaimer)
@@ -345,6 +346,28 @@ Add them with: tanuki add <domain> / tanuki add-ip <ip> / tanuki add-account <id
 ```
 
 It exits non-zero when it finds something, so it drops into a pre-submission hook or CI as-is.
+
+## If Claude Code stops connecting
+
+The proxy points Claude Code at itself by writing `ANTHROPIC_BASE_URL` into
+`.claude/settings.json` on start, and removes it again on shutdown. A kill it
+cannot catch — `docker kill`, the OOM killer, a host crash, or a stop that runs
+past Docker's grace period — leaves that line behind. Claude Code then dials a
+port with nothing on it and fails in that directory with:
+
+```
+Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)
+```
+
+Start the proxy and stop it cleanly to clear it:
+
+```bash
+docker compose up -d && docker compose down
+```
+
+Or remove the `env` block holding `ANTHROPIC_BASE_URL` from
+`.claude/settings.json` by hand. `./tanuki` says so too when it finds the
+redirect with no container running.
 
 ## Fail-closed behaviour
 
