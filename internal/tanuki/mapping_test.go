@@ -1058,9 +1058,7 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 func TestHyphenatedNamesRoundTrip(t *testing.T) {
 	engDir := setupEngagement(t, "acme.com")
 
-	if err := addMapping(engDir, "ticket", "ACME-", "DT-"); err != nil {
-		t.Fatal(err)
-	}
+	writeRawMapping(t, engDir, "ticket|ACME-|DT-")
 
 	mappings := loadMappings(engDir)
 	for _, m := range mappings {

@@ -160,6 +160,16 @@ func TestFictionIPsAreValidAddresses(t *testing.T) {
 	}
 }
 
+// writeRawMapping appends a line to mappings.conf without validation, standing
+// in for a hand-edited or legacy table.
+func writeRawMapping(t *testing.T, engDir, line string) {
+	t.Helper()
+
+	if err := appendToFile(filepath.Join(engDir, "mappings.conf"), line); err != nil {
+		t.Fatalf("appending mapping: %v", err)
+	}
+}
+
 // TestMappingExistsIgnoresMappingContent: the check used to be a substring
 // search over the whole file, so a mapping whose *value* looked like a
 // mappings.conf line satisfied it and the real domain was never mapped.
@@ -168,9 +178,7 @@ func TestMappingExistsIgnoresMappingContent(t *testing.T) {
 
 	engDir := newTestEngagement(t)
 
-	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
-		t.Fatalf("addMapping: %v", err)
-	}
+	writeRawMapping(t, engDir, "custom|codeword|domain|evil.com|localhost:1")
 
 	if mappingExists(engDir, "domain", "evil.com") {
 		t.Error("mappingExists matched inside another mapping's value")
@@ -188,9 +196,7 @@ func TestFindNewDomainsIgnoresMappingContent(t *testing.T) {
 
 	engDir := newTestEngagement(t)
 
-	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
-		t.Fatalf("addMapping: %v", err)
-	}
+	writeRawMapping(t, engDir, "custom|codeword|domain|evil.com|localhost:1")
 
 	found := findNewDomains("please scan evil.com today", engDir)
 	if len(found) == 0 {
@@ -318,5 +324,37 @@ func TestEnvSeedsSubdomains(t *testing.T) {
 
 	if after := loadMappings(engDir); len(after) != len(before) {
 		t.Errorf("restart changed the table: %d -> %d mappings", len(before), len(after))
+	}
+}
+
+// TestMappingValuesCannotCarryTheDelimiter: a "|" in a value shifted the
+// fields, so add-rule "a|b" x stored a rule that rewrote "a" to "b|x"; a line
+// break let an imported engagement smuggle in whole extra mappings.
+func TestMappingValuesCannotCarryTheDelimiter(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	rejected := []mappingEntry{
+		{mapCustom, "a|b", "zzz"},
+		{mapCustom, "keep", "ok\ncustom|injected|PWNED"},
+		{mapCustom, "keep", "ok\rcustom|injected|PWNED"},
+		{mapCustom, "", "empty real"},
+		{mapCustom, "empty fiction", ""},
+		{"ticket", "ACME-", "DT-"},
+	}
+
+	for _, m := range rejected {
+		if err := addMapping(engDir, m.Type, m.Real, m.Fiction); err == nil {
+			t.Errorf("addMapping(%+v) was accepted", m)
+		}
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("a rejected mapping was written: %+v", got)
+	}
+
+	if err := addMapping(engDir, mapCustom, "Project Phoenix", "Test Alpha"); err != nil {
+		t.Errorf("a valid rule was rejected: %v", err)
 	}
 }

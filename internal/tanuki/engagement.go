@@ -637,6 +637,12 @@ func readExport(path string) exportedEngagement {
 		fatal("export file missing engagement name")
 	}
 
+	for _, m := range imported.Mappings {
+		if err := validateMapping(mappingEntry(m)); err != nil {
+			fatal(fmt.Sprintf("export file %s: %v", path, err))
+		}
+	}
+
 	// The name comes from an untrusted file and becomes a path component.
 	if err := validateEngagementName(imported.Name); err != nil {
 		fatal(fmt.Sprintf("export file %s: %v", path, err))
