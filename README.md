@@ -220,7 +220,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | Type            | Detection                              | Fiction                    |
 | --------------- | -------------------------------------- | -------------------------- |
 | Domains         | Auto-detected in prompts & tool output | `localhost:<port>`         |
-| Org names       | Derived from domain                    | `DEVTARGET` (configurable) |
+| Org names       | Derived from domain; also matched inside identifiers (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
 | Emails          | Derived from domain                    | `user@devtarget.local`     |
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |

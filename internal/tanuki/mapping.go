@@ -52,7 +52,7 @@ type wildcardMapping struct {
 type rewriter struct {
 	ac        *acMachine
 	terms     *alternationRewriter
-	orgs      *alternationRewriter
+	orgs      *acMachine
 	wildcards []wildcardMapping
 	// ipFictions maps a canonical real IP to its fiction, so every textual
 	// form of that address (zero-padded, IPv6-compressed) is rewritten.
@@ -227,7 +227,9 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 	sorted := make([]mappingEntry, len(mappings))
 	copy(sorted, mappings)
 
-	sort.Slice(sorted, func(i, j int) bool {
+	// Stable, so which of two equal-length rules for one value comes first,
+	// and therefore wins, is the table's order rather than chance.
+	sort.SliceStable(sorted, func(i, j int) bool {
 		if direction == directionR2F {
 			return len(sorted[i].Real) > len(sorted[j].Real)
 		}
@@ -238,7 +240,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 	var (
 		patterns     []string
 		replacements []string
-		bounded      []bool
+		bounds       []boundKind
 		orgRules     []termEntry
 	)
 
@@ -266,21 +268,21 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
 			replacements = append(replacements, m.Fiction)
-			bounded = append(bounded, isHostMapping(m.Type))
+			bounds = append(bounds, mappingBound(m.Type))
 			rw.explicit[strings.ToLower(m.Real)] = true
 
 		default:
 			patterns = append(patterns, m.Fiction)
 			replacements = append(replacements, m.Real)
-			bounded = append(bounded, isHostMapping(m.Type))
+			bounds = append(bounds, mappingBound(m.Type))
 		}
 	}
 
 	if len(patterns) > 0 {
-		rw.ac = newACMachine(patterns, replacements, bounded)
+		rw.ac = newACMachine(patterns, replacements, bounds)
 	}
 
-	rw.orgs = newAlternationRewriter(orgRules)
+	rw.orgs = newOrgMachine(orgRules)
 
 	if direction == directionR2F {
 		rw.terms = termRewriter
@@ -328,24 +330,69 @@ func (rw *rewriter) splitHeld(text string) (send, hold string) {
 	return text, ""
 }
 
-// isHostMapping reports whether a mapping's values are hostnames, and so must
-// not match inside a longer name. Types whose values are deliberately open
-// ended are excluded: "s3://acme" is meant to cover every bucket that starts
-// with it, so there matching a longer string is the point. Custom rules keep
-// the same greedy behaviour.
-func isHostMapping(typ string) bool {
-	return typ == "domain" || typ == "email"
+// mappingBound says where a mapping's value may match. Hostnames must not
+// match inside a longer name. Types whose values are deliberately open ended
+// are not bounded: "s3://acme" is meant to cover every bucket that starts with
+// it, so there matching a longer string is the point. Custom rules keep the
+// same greedy behaviour.
+func mappingBound(typ string) boundKind {
+	if typ == "domain" || typ == "email" {
+		return boundHost
+	}
+
+	return boundNone
 }
 
-// orgRule orients an org mapping for the given direction. Org names go
-// through the word-bounded alternation so a short one ("ge", "hp") does not
-// shred unrelated words ("message" -> "messaDEV...").
+// minOrgPartLen is the shortest org name matched as part of an identifier.
+// A shorter one is too common a fragment: "x" would fire in "x_axis" and "ge"
+// in "isGe", so those still have to stand as a whole word.
+const minOrgPartLen = 4
+
+// orgRule orients an org mapping for the given direction.
 func orgRule(m mappingEntry, direction string) termEntry {
 	if direction == directionR2F {
 		return termEntry{From: m.Real, To: m.Fiction}
 	}
 
 	return termEntry{From: m.Fiction, To: m.Real}
+}
+
+// newOrgMachine matches org names as words, or as parts of an identifier
+// ("acme_prod", "AcmeCloud"), never inside an unrelated word, so a short one
+// ("ge") does not shred "message" into "messaDEV...". Returns nil when there
+// are no rules.
+func newOrgMachine(rules []termEntry) *acMachine {
+	var (
+		patterns, replacements []string
+		bounds                 []boundKind
+	)
+
+	seen := map[string]bool{}
+
+	for _, r := range rules {
+		key := strings.ToLower(r.From)
+		if key == "" || seen[key] {
+			continue
+		}
+
+		// Rules arrive longest first, so the first for a name wins.
+		seen[key] = true
+
+		bound := boundWord
+		if len(r.From) >= minOrgPartLen {
+			bound = boundWordPart
+		}
+
+		patterns = append(patterns, r.From)
+		replacements = append(replacements, r.To)
+		bounds = append(bounds, bound)
+	}
+
+	if len(patterns) == 0 {
+		return nil
+	}
+
+	return newACMachine(patterns, replacements, bounds)
 }
 
 func (rw *rewriter) rewrite(text string) string {
@@ -365,7 +412,9 @@ func (rw *rewriter) rewriteText(text string) string {
 
 	// Org after the automaton, so a mapped domain is consumed before its bare
 	// org name is matched.
-	text = rw.orgs.rewrite(text)
+	if rw.orgs != nil {
+		text = rw.orgs.replaceAll(text)
+	}
 
 	return rw.terms.rewrite(text)
 }

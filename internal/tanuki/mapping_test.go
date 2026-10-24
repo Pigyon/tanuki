@@ -743,6 +743,62 @@ func TestOrgNameRequiresWordBoundary(t *testing.T) {
 	}
 }
 
+// TestOrgNameIsRewrittenInsideIdentifiers: the org rule only matched where
+// the name stood alone, so "amazon_prod", "AmazonWebServices" and a path like
+// "/srv/amazon_backup/" went upstream with the org name intact.
+func TestOrgNameIsRewrittenInsideIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, f2r := rewriters(t, engDir)
+
+	tests := []struct{ in, want string }{
+		{"amazon_prod", "DEVTARGET_prod"},
+		{"AmazonWebServices", "DEVTARGETWebServices"},
+		{"AMAZONWebServices", "DEVTARGETWebServices"},
+		{"getAmazonToken()", "getDEVTARGETToken()"},
+		{"AWS_AMAZON_KEY", "AWS_DEVTARGET_KEY"},
+		{"/srv/amazon_backup/", "/srv/DEVTARGET_backup/"},
+		{"2amazon", "2DEVTARGET"},
+		// Not a part of an identifier: a different word, or a numbered name
+		// that would collide with another org's fiction.
+		{"amazonian", "amazonian"},
+		{"Amazonas", "Amazonas"},
+		{"amazon2", "amazon2"},
+	}
+
+	for _, tt := range tests {
+		got := r2f.rewrite(tt.in)
+		if got != tt.want {
+			t.Errorf("r2f(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+
+		if back := f2r.rewrite(got); !strings.EqualFold(back, tt.in) {
+			t.Errorf("round trip of %q = %q", tt.in, back)
+		}
+	}
+}
+
+// TestShortOrgNameStaysWholeWord: matching a two-letter org as part of an
+// identifier would fire on every fragment that happens to spell it.
+func TestShortOrgNameStaysWholeWord(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addDomain(engDir, "ge.com", "DEVTARGET"); err != nil {
+		t.Fatalf("addDomain: %v", err)
+	}
+
+	r2f, _ := rewriters(t, engDir)
+
+	for _, in := range []string{"isGe", "ge_x", "getGE"} {
+		if got := r2f.rewrite(in); got != in {
+			t.Errorf("short org rewritten inside %q: %q", in, got)
+		}
+	}
+}
+
 func TestRewriteIsStableOnRepeatedApplication(t *testing.T) {
 	t.Parallel()
 

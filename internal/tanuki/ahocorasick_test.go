@@ -201,7 +201,7 @@ func TestBoundedPatternsSkipLongerHostnames(t *testing.T) {
 	m := newACMachine(
 		[]string{testBaseDomain, "s3://amazon"},
 		[]string{testFictionBase, "file:///tmp/devtarget"},
-		[]bool{true, false},
+		[]boundKind{boundHost, boundNone},
 	)
 
 	tests := []struct{ in, want string }{
