@@ -42,6 +42,13 @@ func onLeakPolicy() string {
 var builtinIgnored = []string{
 	"anthropic.com", "claude.ai", "claude.com", "json-schema.org",
 	"github.com", "githubusercontent.com", "google.com", "googleapis.com",
+	// Package registries and documentation hosts: they appear in go.mod,
+	// package.json, imports and docs links on nearly every coding turn.
+	"golang.org", "go.dev", "gopkg.in", "pkg.go.dev",
+	"npmjs.com", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
+	"stackoverflow.com", "mozilla.org", "w3.org", "readthedocs.io",
+	// Reserved for documentation by RFC 2606; never a real target.
+	"example.com", "example.org", "example.net",
 }
 
 // userEmailRegex pulls the operator's own address out of the "# userEmail"

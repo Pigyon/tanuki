@@ -424,16 +424,22 @@ func TestIgnoreListFromEnv(t *testing.T) {
 // TestIgnoreCoversSubdomains: TANUKI_IGNORE is documented as covering
 // subdomains, but an entry below the apex matched only itself.
 func TestIgnoreCoversSubdomains(t *testing.T) {
-	t.Setenv("TANUKI_IGNORE", "cdn.example.org, other.net")
+	t.Setenv("TANUKI_IGNORE", "cdn.partner-site.org, other.net")
 
-	ignored := []string{"cdn.example.org", "img.cdn.example.org", "a.b.cdn.example.org", "other.net", "api.other.net"}
+	ignored := []string{
+		"cdn.partner-site.org", "img.cdn.partner-site.org",
+		"a.b.cdn.partner-site.org", "other.net", "api.other.net",
+	}
 	for _, d := range ignored {
 		if !isIgnoredDomain(d) {
 			t.Errorf("%s was not ignored", d)
 		}
 	}
 
-	for _, d := range []string{"example.org", "www.example.org", "notcdn.example.org", "cdn.example.org.evil.com"} {
+	for _, d := range []string{
+		"partner-site.org", "www.partner-site.org",
+		"notcdn.partner-site.org", "cdn.partner-site.org.evil.com",
+	} {
 		if isIgnoredDomain(d) {
 			t.Errorf("%s was ignored", d)
 		}

@@ -75,7 +75,7 @@ func (s scope) covers(domain string) bool {
 // "tanuki add" and an explicit scope entry both still map in full.
 func (s scope) isTarget(domain string) bool {
 	if len(s) == 0 {
-		return hasCommonTLD(domain)
+		return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
 	}
 
 	return s.covers(domain)

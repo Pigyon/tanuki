@@ -393,6 +393,41 @@ func mappingBound(typ string) boundKind {
 	return boundNone
 }
 
+// reservedOrgNames are never spent on an org rule by auto-detection. An org
+// rule replaces a bare word everywhere it appears, and these are words code is
+// made of -- ".net", ".io", ".at", ".network", ".global" and ".online" are all
+// real TLDs, so "using System.Net;", "self.network" and "buffer.at(i)" all
+// read as hostnames. Mapping one rewrote the word for the rest of the
+// engagement and the model was shown mangled source from then on.
+//
+// "tanuki add" and an in-scope entry both bypass this: the operator saying a
+// domain is a target outranks the guess.
+var reservedOrgNames = map[string]bool{
+	"self": true, "this": true, "super": true, "system": true, "user": true,
+	"users": true, "admin": true, "data": true, "config": true, "options": true,
+	"option": true, "buffer": true, "template": true, "example": true,
+	"socket": true, "server": true, "client": true, "request": true,
+	"response": true, "session": true, "context": true, "object": true,
+	"module": true, "package": true, "import": true, "export": true,
+	"default": true, "value": true, "result": true, "error": true,
+	"string": true, "number": true, "index": true, "item": true, "items": true,
+	"name": true, "type": true, "class": true, "props": true, "state": true,
+	"store": true, "cache": true, "queue": true, "event": true, "hello": true,
+	"world": true, "test": true, "tests": true, "spec": true, "build": true,
+	"main": true, "app": true, "api": true, "web": true, "src": true,
+	"lib": true, "docs": true, "doc": true, "file": true, "files": true,
+	"path": true, "node": true, "core": true, "base": true, "util": true,
+	"utils": true, "common": true, "shared": true, "local": true, "global": true,
+}
+
+// worthAnOrgRule reports whether a detected domain's registrable name is
+// specific enough to rewrite as a bare word. Length is deliberately not part
+// of it: a short name is still a real target ("bit.ly", "ge.com"), and the
+// automaton already requires a whole word for one.
+func worthAnOrgRule(orgName string) bool {
+	return orgName != "" && !reservedOrgNames[strings.ToLower(orgName)]
+}
+
 // minOrgPartLen is the shortest org name matched as part of an identifier.
 // A shorter one is too common a fragment: "x" would fire in "x_axis" and "ge"
 // in "isGe", so those still have to stand as a whole word.
@@ -1462,6 +1497,22 @@ func portThenPath(text string, i int) bool {
 	return digits > 0 && digits <= 5 && i+digits < len(text) && text[i+digits] == '/'
 }
 
+// isDetectableHost reports whether the token at [start,end) is a hostname
+// rather than something code is made of.
+//
+// Where the surroundings say it is a host, any real TLD counts. A bare token
+// needs a common TLD and a registrable name that is not an everyday word:
+// ".net", ".io", ".at", ".network", ".global" and ".online" are all real TLDs,
+// so "using System.Net;", "self.network" and "buffer.at(i)" are hostnames by
+// shape alone, and mapping them rewrote the source the model was reading.
+func isDetectableHost(text, domain string, start, end int) bool {
+	if hostContext(text, start, end) {
+		return hasCommonTLD(domain) || isRealDomain(domain)
+	}
+
+	return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
+}
+
 // scanned is what scanTargets found in one string.
 type scanned struct{ domains, ips, accounts []string }
 
@@ -1487,9 +1538,7 @@ func scanTargets(text string) scanned {
 			continue
 		}
 
-		// A common TLD stands on its own; any other real TLD needs the
-		// surroundings to say the token is a host, not an attribute access.
-		if hasCommonTLD(domain) || (isRealDomain(domain) && hostContext(text, loc[0], loc[1])) {
+		if isDetectableHost(text, domain, loc[0], loc[1]) {
 			seen[domain] = true
 			s.domains = append(s.domains, domain)
 		}

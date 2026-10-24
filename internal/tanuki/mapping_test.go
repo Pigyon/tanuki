@@ -454,6 +454,47 @@ func TestTLDDetectionAvoidsCodePatterns(t *testing.T) {
 // TestFindNewDomainsDetectsApexDomains is a regression test: a prompt
 // mentioning only a bare apex domain used to produce no mapping at all,
 // so the real domain was sent to the upstream API unrewritten.
+// TestCodeIsNotReadAsHostnames: ".net", ".io", ".at", ".network", ".global"
+// and ".online" are real TLDs, so ordinary source reads as hostnames by shape
+// alone. Mapping one rewrote the word everywhere, and the model was shown
+// mangled code for the rest of the engagement.
+func TestCodeIsNotReadAsHostnames(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	code := []string{
+		"self.network = nn.Sequential()", "using System.Net;", `require("socket.io")`,
+		"if (options.global) {}", "if (user.online) {}", "package hello.world;",
+		"return buffer.at(index);", "https://pkg.go.dev/net/http",
+		"require golang.org/x/net v0.38.0", "https://example.com/api/v1",
+		"see https://stackoverflow.com/q/1", "import numpy", "docs.rs/serde",
+	}
+	for _, text := range code {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
+// TestShortAndOrdinaryTargetsStillDetected guards the other side of that: a
+// real target must not be filtered out for having a short or plain name.
+func TestShortAndOrdinaryTargetsStillDetected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"scan bounty.amazon.com", "target.io is up", "mail ops@acmecorp.net",
+		"check evilcorp.ai", "bit.ly/abc", "api.target.com", "ge.com",
+		"vpn.corp-target.net", "staging.hackerone.com",
+	} {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
 // TestRealTLDsDetectedInHostContext: the curated TLD list left real domains
 // on uncommon TLDs (.in, .it, .pl, .app) undetected, so they went upstream in
 // clear. Where the surroundings say the token is a host, any ICANN suffix is
