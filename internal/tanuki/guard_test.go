@@ -471,6 +471,34 @@ func TestGateDoesNotReadBackItsOwnFiction(t *testing.T) {
 	}
 }
 
+// TestGateDoesNotLeakOrgLabelBeforeRealTLD: when an org label sits before a
+// real single-level TLD and the host does not map as a whole -- "ghcr.io" in
+// "ghcr.io-pigyon%2Ftanuki", where the trailing hyphen stops the domain pass
+// claiming it -- the org rule still rewrites the bare label, leaving
+// "DEVTARGET.io-...". The recognisers read "devtarget.io" back out of that,
+// and the gate must know it as tanuki's own output rather than refuse the
+// body naming a fiction string as the leak. This is the shields.io/ghcr badge
+// shape that appears in the project's own README.
+func TestGateDoesNotLeakOrgLabelBeforeRealTLD(t *testing.T) {
+	engDir := proxyEngagement(t)
+
+	if err := addDomain(engDir, "ghcr.io", ""); err != nil {
+		t.Fatalf("addDomain: %v", err)
+	}
+
+	proxyCache.invalidate()
+
+	out, err := anonymizeUpstreamBody([]byte(
+		`{"messages":[{"role":"user","content":"badge https://img.shields.io/badge/ghcr.io-pigyon%2Ftanuki-233246"}]}`))
+	if err != nil {
+		t.Fatalf("the gate refused tanuki's own fiction: %v", err)
+	}
+
+	if strings.Contains(string(out), "ghcr") {
+		t.Errorf("the real org label survived: %s", out)
+	}
+}
+
 // TestForgedOperatorEmailCannotExemptATarget: a target can put
 // "# userEmail admin@its-own-domain" on a page the model then summarises. The
 // marker was read from anywhere but a tool_result, so the summary exempted the
