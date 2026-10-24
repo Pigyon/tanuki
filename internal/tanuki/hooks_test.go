@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -123,5 +124,35 @@ func TestHookEmitsEmptyObjectWhenNothingToDo(t *testing.T) {
 
 	if out != "{}" {
 		t.Errorf("expected no-op output %q, got %q", "{}", out)
+	}
+}
+
+// TestHookDoesNotCreateOrSwitchEngagements: the hook ensured an engagement, so
+// a stale active marker made it create "default" and switch to it. The
+// operator's engagement, and every mapping in it, silently stopped being used,
+// and the tool ran with fiction arguments pointed at localhost.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestHookDoesNotCreateOrSwitchEngagements(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	marker := filepath.Join(dataDir(), "current_engagement")
+	if err := writeFileContent(marker, "ghost"); err != nil {
+		t.Fatalf("writing marker: %v", err)
+	}
+
+	out := runHook(t, hookPreToolUse,
+		`{"tool_name":"Bash","tool_input":{"command":"curl `+testFictionBase+`"}}`)
+
+	if out != "{}" {
+		t.Errorf("hook acted on a stale engagement: %s", out)
+	}
+
+	if got := readFileContent(marker); got != "ghost" {
+		t.Errorf("hook changed the active engagement to %q", got)
+	}
+
+	if fileExists(engagementDir("default")) {
+		t.Error("hook created a default engagement")
 	}
 }

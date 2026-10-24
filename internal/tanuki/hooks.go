@@ -77,9 +77,14 @@ func cmdHook(args []string) {
 }
 
 func readHookInput() (string, map[string]any, bool) {
-	eng, err := ensureEngagement()
+	// Read only: a hook must not create or switch an engagement. Creating one
+	// here switched the active engagement away from the operator's, so the
+	// tool then ran with fiction arguments left unrewritten and went to
+	// localhost instead of the target. The proxy creates the engagement at
+	// startup, before any hook can run.
+	eng, err := requireEngagement()
 	if err != nil {
-		logger.Error("hook: failed to ensure engagement", "error", err)
+		logger.Error("hook: no active engagement", "error", err)
 		emitNoop()
 
 		return "", nil, false
