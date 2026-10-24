@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -112,16 +114,25 @@ func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 
 // rewriteToolArgs rewrites every key and value of a tool's arguments. It
 // builds a new map because a key cannot be renamed while ranging over one.
+//
+// Keys are taken in order so the result does not depend on map iteration, and
+// a key whose rewrite collides with one already placed keeps its original
+// name: dropping an argument silently is worse than leaving one to the gate.
 func rewriteToolArgs(t map[string]any, fn func(string) string) map[string]any {
 	out := make(map[string]any, len(t))
 
-	for k, val := range t {
-		if s, ok := val.(string); ok {
-			out[fn(k)] = fn(s)
+	for _, k := range slices.Sorted(maps.Keys(t)) {
+		key := fn(k)
+		if _, taken := out[key]; taken {
+			key = k
+		}
+
+		if s, ok := t[k].(string); ok {
+			out[key] = fn(s)
 			continue
 		}
 
-		out[fn(k)] = rewriteJSONValue(val, fn, true)
+		out[key] = rewriteJSONValue(t[k], fn, true)
 	}
 
 	return out

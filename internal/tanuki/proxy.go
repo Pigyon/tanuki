@@ -592,7 +592,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	if !isJSON {
 		out := rw.rewrite(string(body))
 
-		if err := checkResidual(rw.survivors(out), extraIgnored, out); err != nil {
+		if err := checkResidual(rw, rw.survivors(out), extraIgnored, out); err != nil {
 			return nil, err
 		}
 
@@ -611,7 +611,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 		return out
 	})
 
-	if err := checkResidual(survived, extraIgnored, jsonStrings(doc)...); err != nil {
+	if err := checkResidual(rw, survived, extraIgnored, jsonStrings(doc)...); err != nil {
 		return nil, err
 	}
 
@@ -648,10 +648,12 @@ func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
 // The error names counts, never values. It is returned to the local client,
 // which may fold the text into its next prompt, so the values go to the log
 // the operator can read with "docker logs tanuki" instead.
-func checkResidual(survived, extraIgnored []string, texts ...string) error {
+func checkResidual(rw *rewriter, survived, extraIgnored []string, texts ...string) error {
 	slices.Sort(survived)
 
-	residual := slices.Concat(residualTargets(extraIgnored, texts...), slices.Compact(survived))
+	found := slices.DeleteFunc(residualTargets(extraIgnored, texts...), rw.isOwnFiction)
+
+	residual := slices.Concat(found, slices.Compact(survived))
 	if len(residual) == 0 {
 		return nil
 	}

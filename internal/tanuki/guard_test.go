@@ -117,7 +117,7 @@ func TestResidualFindsRealValues(t *testing.T) {
 func TestRefusesWhenAValueSurvives(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
-	err := checkResidual(nil, nil, "a stray "+testBaseDomain+" survived")
+	err := checkResidual(newRewriter(nil, directionR2F), nil, nil, "a stray "+testBaseDomain+" survived")
 	if err == nil {
 		t.Fatal("checkResidual accepted a body holding a real value")
 	}
@@ -155,7 +155,7 @@ func TestGateCatchesOrgNamesAndCustomRules(t *testing.T) {
 		t.Error("survivors matched the org inside an unrelated word")
 	}
 
-	if err := checkResidual([]string{"amazon"}, nil); err == nil {
+	if err := checkResidual(newRewriter(nil, directionR2F), []string{"amazon"}, nil); err == nil {
 		t.Error("checkResidual accepted a surviving org name")
 	}
 }
@@ -220,7 +220,7 @@ func TestOnLeakWarnForwardsAnyway(t *testing.T) {
 	proxyEngagement(t)
 	t.Setenv("TANUKI_ON_LEAK", onLeakWarn)
 
-	if err := checkResidual(nil, nil, "a stray "+testBaseDomain+" survived"); err != nil {
+	if err := checkResidual(newRewriter(nil, directionR2F), nil, nil, "a stray "+testBaseDomain+" survived"); err != nil {
 		t.Errorf("warn policy still refused: %v", err)
 	}
 }
@@ -437,5 +437,30 @@ func TestIgnoreCoversSubdomains(t *testing.T) {
 		if isIgnoredDomain(d) {
 			t.Errorf("%s was ignored", d)
 		}
+	}
+}
+
+// TestGateDoesNotReadBackItsOwnFiction: an ignored domain keeps its suffix but
+// still has its org label rewritten, so "acme.com.br" left as
+// "DEVTARGET.com.br" -- which the recognisers then read as a real domain. The
+// body was refused, on every retry, naming a fiction string as the leak.
+func TestGateDoesNotReadBackItsOwnFiction(t *testing.T) {
+	t.Setenv("TANUKI_IGNORE", "acme.com.br")
+
+	engDir := proxyEngagement(t)
+
+	if err := addDomain(engDir, "acme.com", ""); err != nil {
+		t.Fatalf("addDomain: %v", err)
+	}
+
+	proxyCache.invalidate()
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":"see acme.com.br and acme.com"}]}`))
+	if err != nil {
+		t.Fatalf("the gate refused tanuki's own output: %v", err)
+	}
+
+	if strings.Contains(string(out), "acme.com") {
+		t.Errorf("a real value survived: %s", out)
 	}
 }

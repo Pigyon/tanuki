@@ -830,6 +830,35 @@ func TestIPsMustStandAlone(t *testing.T) {
 	}
 }
 
+// TestAddressNextToPunctuationIsStillFound: requiring a non-word character on
+// both sides went too far and stopped finding real addresses written beside an
+// underscore or a file extension, which is a leak in both detection and the
+// gate.
+func TestAddressNextToPunctuationIsStillFound(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"2001:db8::1_old", "dump_2001:db8::1.pcap",
+		"[2001:db8::1]:443", "(2001:db8::1)", "=2001:db8::1",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestLinkLocalAddressesAreNotTargets: fe80::/10 identifies an interface, not
+// a host anyone can route to.
+func TestLinkLocalAddressesAreNotTargets(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{"fe80::1", "ping fe80::1%eth0"} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+}
+
 // TestIPv6AfterAColonIsDetected: a single colon before an address ("ip:...")
 // made every prefix of the greedy match invalid, so it was never detected.
 func TestIPv6AfterAColonIsDetected(t *testing.T) {
@@ -967,6 +996,44 @@ func TestShortOrgNameStaysWholeWord(t *testing.T) {
 		if got := r2f.rewrite(in); got != in {
 			t.Errorf("short org rewritten inside %q: %q", in, got)
 		}
+	}
+}
+
+// TestAccountFictionsDoNotHoldBackNumbers: an account fiction is all digits,
+// so its prefixes ("0", "00") entered the set of fiction starts and the
+// stream held back the end of every number the model wrote.
+func TestAccountFictionsDoNotHoldBackNumbers(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+
+	if err := addAccountMapping(engDir, "123456789012"); err != nil {
+		t.Fatalf("addAccountMapping: %v", err)
+	}
+
+	_, f2r := rewriters(t, engDir)
+
+	for _, text := range []string{"the count is 0", "value 10", "100% of 0"} {
+		if send, hold := f2r.splitHeld(text); hold != "" || send != text {
+			t.Errorf("splitHeld(%q) = %q, %q; want the whole string sent", text, send, hold)
+		}
+	}
+}
+
+// TestFictionContainingItsRealValueIsRejected: the rewrite would put the real
+// value back inside its own replacement, and the gate then refused every body
+// for the rest of the engagement.
+func TestFictionContainingItsRealValueIsRejected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := addCustomRule(engDir, "internal", "internal-dev"); err == nil {
+		t.Error("a rule whose fiction contains its real value was accepted")
+	}
+
+	if _, err := addCustomRule(engDir, "internal", "service-dev"); err != nil {
+		t.Errorf("a sound rule was rejected: %v", err)
 	}
 }
 

@@ -81,6 +81,9 @@ type rewriter struct {
 	// residue finds the org names and custom-rule values a rewrite should have
 	// removed (r2f only), for the fail-closed gate; see survivors.
 	residue *acMachine
+	// fictionLabels holds the hostname labels this engagement's own output is
+	// built from, so the gate does not read them back as real targets.
+	fictionLabels map[string]bool
 	// memo remembers rewrites of long strings. A rewriter is rebuilt whenever
 	// the mappings change, so a remembered result is never stale.
 	memo memoCache[string]
@@ -318,6 +321,7 @@ func newRewriterEscaping(mappings []mappingEntry, direction string, escape func(
 	if direction == directionR2F {
 		rw.terms = termRewriter
 		rw.residue = newResidueMachine(mappings)
+		rw.fictionLabels = fictionLabelsOf(mappings)
 	} else {
 		rw.heads, rw.maxHead = fictionHeads(mappings)
 	}
@@ -333,7 +337,10 @@ func fictionHeads(mappings []mappingEntry) (map[string]bool, int) {
 	longest := 0
 
 	for _, m := range mappings {
-		if m.Type == mapWildcard {
+		// Wildcard fictions are never reversed. Account fictions are all
+		// zeroes and digits, so their prefixes ("0", "00", ...) would hold
+		// back the end of every number the model writes.
+		if m.Type == mapWildcard || m.Type == mapAccount {
 			continue
 		}
 
@@ -499,6 +506,35 @@ func newResidueMachine(mappings []mappingEntry) *acMachine {
 	return newACMachine(patterns, patterns, bounds)
 }
 
+// fictionLabelsOf collects the labels tanuki's own fiction is written from.
+func fictionLabelsOf(mappings []mappingEntry) map[string]bool {
+	labels := map[string]bool{"localhost": true}
+
+	for _, m := range mappings {
+		if m.Type == mapOrg {
+			labels[strings.ToLower(m.Fiction)] = true
+		}
+	}
+
+	return labels
+}
+
+// isOwnFiction reports whether a real-looking value is something tanuki wrote.
+// An ignored domain still has its org label rewritten, so "acme.com.br" leaves
+// as "DEVTARGET.com.br", which the recognisers then read as a real domain --
+// and the gate refused the body, naming a fiction string as the leak.
+func (rw *rewriter) isOwnFiction(value string) bool {
+	for _, label := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == '.' || r == ':'
+	}) {
+		if rw.fictionLabels[label] {
+			return true
+		}
+	}
+
+	return false
+}
+
 // survivors returns the mapped org names and custom-rule values still in text
 // that has been rewritten. Each is matched exactly as the rewrite matched it,
 // so anything found is a value the rewrite failed to replace.
@@ -662,6 +698,11 @@ func validateMapping(m mappingEntry) error {
 		return fmt.Errorf("mapping %q -> %q has an empty value", m.Real, m.Fiction)
 	case strings.ContainsAny(m.Real, "|\r\n"), strings.ContainsAny(m.Fiction, "|\r\n"):
 		return fmt.Errorf("mapping %q -> %q contains \"|\" or a line break", m.Real, m.Fiction)
+	case strings.Contains(strings.ToLower(m.Fiction), strings.ToLower(m.Real)):
+		// The rewrite would put the real value back inside its own
+		// replacement, and the gate would then refuse every body for the rest
+		// of the engagement: "internal" -> "internal-dev" did exactly that.
+		return fmt.Errorf("mapping %q -> %q: the fiction contains the real value", m.Real, m.Fiction)
 	}
 
 	return nil
@@ -1069,7 +1110,8 @@ func isPrivateIP(ip string) bool {
 		return true
 	}
 
-	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
+	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast()
 }
 
 // accountRegexes find AWS account IDs where the context says a twelve-digit
@@ -1209,15 +1251,45 @@ func findIPs(text string, re *regexp.Regexp) []ipMatch {
 	return found
 }
 
-// standsAlone reports whether text[start:end] is not glued to a letter, digit
-// or "_" on either side.
+// standsAlone reports whether text[start:end] is a whole address rather than a
+// slice of a longer token.
+//
+// A letter in front means the match is part of a word: "f::de" in Rust's
+// "Self::de", or the "::1234" the greedy pattern finds in "iam::123456789012".
+// A hex digit behind means the trim cut a longer run in half, which is the
+// other half of the same ARN. Everything else is punctuation an address is
+// written next to, so "dump_2001:db8::1.pcap" and "2001:db8::1_old" are still
+// found -- requiring a non-word character on both sides missed those.
 func standsAlone(text string, start, end int) bool {
-	glued := func(r rune) bool { return isAlnum(r) || r == '_' }
+	if start > 0 && isASCIILetter(text[start-1]) {
+		return false
+	}
 
-	before, _, _ := around(text, start)
-	_, after, _ := around(text, end)
+	return !addressContinuesAt(text, end)
+}
 
-	return !glued(before) && !glued(after)
+func isASCIILetter(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func isHexDigit(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F'
+}
+
+// addressContinuesAt reports whether an address carries on at i, either
+// directly or through a separator with another hex digit behind it.
+func addressContinuesAt(text string, i int) bool {
+	if i >= len(text) {
+		return false
+	}
+
+	if isHexDigit(text[i]) {
+		return true
+	}
+
+	isSeparator := text[i] == '.' || text[i] == ':'
+
+	return isSeparator && i+1 < len(text) && isHexDigit(text[i+1])
 }
 
 func longestValidIPPrefix(candidate string) (canonical string, prefixLen int) {
