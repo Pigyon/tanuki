@@ -120,6 +120,14 @@ func runProxy() {
 	if fileExists(settingsPath) {
 		removeTanukiSettings(settingsPath)
 	}
+
+	// The cover story goes with it. Left behind, it tells the next session in
+	// this directory that the project is called DEVTARGET and runs on
+	// localhost, with no proxy behind that any more.
+	claudeMDPath := filepath.Join(".claude", "CLAUDE.md")
+	if fileExists(claudeMDPath) {
+		removeTanukiClaudeMD(claudeMDPath)
+	}
 }
 
 var httpClient = &http.Client{

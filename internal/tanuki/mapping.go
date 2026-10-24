@@ -763,15 +763,7 @@ func rewritesIntoItself(m mappingEntry) bool {
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
-	m := mappingEntry{Type: typ, Real: realVal, Fiction: fiction}
-	if err := validateMapping(m); err != nil {
-		return err
-	}
-
-	return appendToFile(
-		filepath.Join(engDir, "mappings.conf"),
-		fmt.Sprintf("%s|%s|%s", typ, realVal, fiction),
-	)
+	return appendMappings(engDir, []mappingEntry{{Type: typ, Real: realVal, Fiction: fiction}})
 }
 
 func nextCounter(engDir, filename, defaultVal string) (int, error) {
@@ -870,7 +862,7 @@ func derivedMappingEntries(baseDomain, orgName, fictionOrg string) []mappingEntr
 	return []mappingEntry{
 		{mapOrg, org, fictionOrg},
 		{mapEmail, "@" + baseDomain, "@" + fictionLower + ".local"},
-		{mapPath, "/" + org + "/", "/dev/" + fictionLower + "/"},
+		{mapPath, "/" + org + "/", "/" + fictionLower + "/"},
 		{mapCloud, "s3://" + org, "file:///tmp/" + fictionLower},
 	}
 }
@@ -1077,7 +1069,6 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 
 	baseFiction := resolveFictionOrg(engDir, fictionOrg)
 	baseDomain := extractBaseDomain(domain)
-	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
 	unlock, err := lockAllocation(engDir)
 	if err != nil {
@@ -1132,7 +1123,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 		entries = append(entries, hostEntry(domain, port))
 	}
 
-	return appendMappings(mappingsPath, entries)
+	return appendMappings(engDir, entries)
 }
 
 // appendMappings validates every entry before writing any of them, so a value
@@ -1140,7 +1131,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 // addDomainMappings built its lines by hand and wrote them straight out, which
 // is how "--fiction-org ACME-CORP" (a fiction containing its own real value)
 // and a fiction org holding a newline both got in.
-func appendMappings(path string, entries []mappingEntry) error {
+func appendMappings(engDir string, entries []mappingEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -1155,7 +1146,54 @@ func appendMappings(path string, entries []mappingEntry) error {
 		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
 	}
 
-	return appendToFile(path, strings.Join(lines, "\n"))
+	if err := checkTableConflicts(loadMappings(engDir), entries); err != nil {
+		return err
+	}
+
+	return appendToFile(filepath.Join(engDir, "mappings.conf"), strings.Join(lines, "\n"))
+}
+
+// checkTableConflicts refuses an addition whose fiction holds another
+// mapping's real value, or whose real value is held by another's fiction.
+//
+// The rewrite takes the longest non-overlapping match, so it replaces
+// "AcmeBank" and never looks at the "Bank" its own replacement introduced. The
+// gate scans for every match, finds it, and refuses the body -- for the rest
+// of the engagement, since the history comes back every turn. Both mappings
+// are sound on their own, so checking a mapping against itself cannot see it.
+func checkTableConflicts(existing, added []mappingEntry) error {
+	all := slices.Concat(existing, added)
+
+	machine := newResidueMachine(all)
+	if machine == nil {
+		return nil
+	}
+
+	addedReal := map[string]bool{}
+	for _, m := range added {
+		addedReal[strings.ToLower(m.Real)] = true
+	}
+
+	for _, m := range all {
+		for _, hit := range machine.find(m.Fiction) {
+			held := strings.ToLower(machine.patterns[hit.index])
+
+			isSelf := held == strings.ToLower(m.Real)
+			if isSelf || (!addedReal[held] && !containsEntry(added, m)) {
+				continue
+			}
+
+			return fmt.Errorf(
+				"mapping %q -> %q: the fiction holds %q, which is mapped too; "+
+					"the gate would refuse every body naming it", m.Real, m.Fiction, held)
+		}
+	}
+
+	return nil
+}
+
+func containsEntry(entries []mappingEntry, m mappingEntry) bool {
+	return slices.Contains(entries, m)
 }
 
 func addIPMapping(engDir, ip string) error {
@@ -1373,7 +1411,7 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 		}
 
 		ip, n := longestValidIPPrefix(text[start:to])
-		if n == 0 || addressContinuesAt(text, start+n) {
+		if n == 0 || addressContinuesAt(text, start+n) || isHardwareAddress(text[start:start+n]) {
 			continue
 		}
 
@@ -1411,6 +1449,30 @@ func precededByVersion(text string, i int) bool {
 
 func isASCIILetterByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// isHardwareAddress reports whether raw is a MAC or Fibre Channel WWN rather
+// than an address. Eight groups of exactly two hex digits parse as a valid
+// IPv6, so storage and network inventory output became targets. A real address
+// written that way is indistinguishable, but it is not how one is written: a
+// run with no "::" and every group padded to two digits is hardware.
+func isHardwareAddress(raw string) bool {
+	if strings.Contains(raw, "::") || strings.Contains(raw, ".") {
+		return false
+	}
+
+	groups := strings.Split(raw, ":")
+	if len(groups) < 6 {
+		return false
+	}
+
+	for _, g := range groups {
+		if len(g) != 2 {
+			return false
+		}
+	}
+
+	return true
 }
 
 func isAlnumByte(b byte) bool {

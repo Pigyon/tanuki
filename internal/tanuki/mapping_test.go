@@ -1061,6 +1061,31 @@ func TestAddressAfterAWordEndingInVer(t *testing.T) {
 	}
 }
 
+// TestHardwareAddressesAreNotTargets: eight groups of two hex digits parse as
+// a valid IPv6, so Fibre Channel WWNs and 8-group MACs in storage and network
+// inventory output were mapped as targets.
+func TestHardwareAddressesAreNotTargets(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"wwn 20:00:00:25:b5:00:00:01 online", "WWN 50:06:01:60:bb:a0:1f:2e",
+		"mac 00:1a:2b:3c:4d:5e:00:11", "mac 00:1a:2b:3c:4d:5e",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+
+	// A real address in full form is still found.
+	for _, text := range []string{
+		"2001:db8:85a3:0000:0000:8a2e:0370:7334", "2001:db8::1", "::ffff:52.94.236.248",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
 // TestLinkLocalAddressesAreNotTargets: fe80::/10 identifies an interface, not
 // a host anyone can route to.
 func TestLinkLocalAddressesAreNotTargets(t *testing.T) {

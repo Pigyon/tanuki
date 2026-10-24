@@ -514,3 +514,65 @@ func TestAllocationRefusesWhenItCannotLock(t *testing.T) {
 		t.Errorf("an unserialised allocation wrote %d mappings: %+v", len(got), got)
 	}
 }
+
+// TestOrgNamedDevCanBeMapped: the path fiction was "/dev/" + fiction, so an
+// org actually called "dev" had a real path its own fiction contained.
+// Validation refused the whole entry set, and since Claude Code resends
+// history every later request naming that target was refused too, while each
+// attempt burned a port and an org number.
+func TestOrgNamedDevCanBeMapped(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addDomain(engDir, "dev.io", ""); err != nil {
+		t.Fatalf("addDomain(dev.io): %v", err)
+	}
+
+	for i := range 3 {
+		if _, err := mapTargets(engDir, nil, "scan dev.io now"); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+
+	if got := readFileContent(filepath.Join(engDir, "port_counter")); got != "9002" {
+		t.Errorf("port_counter drifted to %q, want 9002", got)
+	}
+
+	r2f, f2r := rewriters(t, engDir)
+	if back := f2r.rewrite(r2f.rewrite("/dev/www")); back != "/dev/www" {
+		t.Errorf("path round trip: %q", back)
+	}
+}
+
+// TestRulesThatWouldRefuseEveryBodyAreRejected: the rewrite takes the longest
+// non-overlapping match, so it replaces "AcmeBank" and never looks at the
+// "Bank" its own replacement introduced. The gate scans for every match, finds
+// it, and refuses the body -- for the rest of the engagement, since the
+// history comes back every turn. Each mapping is sound on its own, so checking
+// one against itself cannot see it.
+func TestRulesThatWouldRefuseEveryBodyAreRejected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := addCustomRule(engDir, "AcmeBank", "DevTarget Bank"); err != nil {
+		t.Fatalf("first rule: %v", err)
+	}
+
+	if _, err := addCustomRule(engDir, "Bank", "Institution"); err == nil {
+		t.Error("a rule that would refuse every body was accepted")
+	}
+
+	r2f, _ := rewriters(t, engDir)
+
+	out := r2f.rewrite("the client AcmeBank was tested")
+	if got := r2f.survivors(out); len(got) != 0 {
+		t.Errorf("the gate would refuse %q over %v", out, got)
+	}
+
+	// Unrelated rules are unaffected.
+	if _, err := addCustomRule(engDir, "Project Phoenix", "Test Alpha"); err != nil {
+		t.Errorf("an unrelated rule was rejected: %v", err)
+	}
+}
