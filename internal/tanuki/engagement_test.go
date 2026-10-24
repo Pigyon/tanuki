@@ -384,3 +384,43 @@ func TestParseArgs(t *testing.T) {
 		}
 	}
 }
+
+// TestAddDomainValidatesItsMappings: addDomainMappings built its lines by hand
+// and wrote them straight out, so validateMapping never saw them.
+// "--fiction-org ACME-CORP" produced org|acme|ACME-CORP, which rewrites "acme"
+// into a value that still holds it -- after which the gate refused every body
+// mentioning the target, for good. A newline in the fiction org was worse: it
+// split the line and left four orphan rows that loadMappings dropped with a
+// warning, one of them a four-character pattern reversing to the real domain.
+func TestAddDomainValidatesItsMappings(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, fictionOrg := range []string{"ACME-CORP", "DEV\nTARGET", "A|B", "acme-dev"} {
+		if err := addDomain(engDir, "acme.com", fictionOrg); err == nil {
+			t.Errorf("addDomain accepted --fiction-org %q", fictionOrg)
+		}
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("a rejected add wrote %d mappings: %+v", len(got), got)
+	}
+
+	if err := addDomain(engDir, "acme.com", "SAFECORP"); err != nil {
+		t.Errorf("a sound fiction org was rejected: %v", err)
+	}
+}
+
+// TestShortOrgInsideItsFictionIsAllowed: the self-containment check was a
+// plain substring search, so the org "ge" was refused for sitting inside
+// "DEVTARGET" -- where no word-bounded rule can ever match it.
+func TestShortOrgInsideItsFictionIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addDomain(engDir, "ge.com", "DEVTARGET"); err != nil {
+		t.Errorf("addDomain(ge.com): %v", err)
+	}
+}

@@ -698,14 +698,28 @@ func validateMapping(m mappingEntry) error {
 		return fmt.Errorf("mapping %q -> %q has an empty value", m.Real, m.Fiction)
 	case strings.ContainsAny(m.Real, "|\r\n"), strings.ContainsAny(m.Fiction, "|\r\n"):
 		return fmt.Errorf("mapping %q -> %q contains \"|\" or a line break", m.Real, m.Fiction)
-	case strings.Contains(strings.ToLower(m.Fiction), strings.ToLower(m.Real)):
-		// The rewrite would put the real value back inside its own
-		// replacement, and the gate would then refuse every body for the rest
-		// of the engagement: "internal" -> "internal-dev" did exactly that.
-		return fmt.Errorf("mapping %q -> %q: the fiction contains the real value", m.Real, m.Fiction)
+	case rewritesIntoItself(m):
+		return fmt.Errorf("mapping %q -> %q: the fiction still holds the real value", m.Real, m.Fiction)
 	}
 
 	return nil
+}
+
+// rewritesIntoItself reports whether the real value would still be found
+// inside its own replacement, which leaves the gate refusing every body that
+// mentions it for the rest of the engagement -- "internal" -> "internal-dev".
+//
+// The test uses the bound the mapping is matched with, not a plain substring
+// search: the org "ge" sits inside the fiction "DEVTARGET", but no
+// word-bounded rule can match it there, so that mapping is sound.
+func rewritesIntoItself(m mappingEntry) bool {
+	machine := newACMachine([]string{m.Real}, []string{m.Fiction}, []boundKind{mappingBound(m.Type)})
+
+	if m.Type == mapOrg {
+		machine = newOrgMachine([]termEntry{{From: m.Real, To: m.Fiction}})
+	}
+
+	return machine != nil && len(machine.find(m.Fiction)) > 0
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
@@ -798,22 +812,22 @@ func extractOrgName(domain string) string {
 	return domain
 }
 
-func hostLine(domain string, port int) string {
-	return fmt.Sprintf("domain|%s|localhost:%d", domain, port)
+func hostEntry(domain string, port int) mappingEntry {
+	return mappingEntry{mapDomain, domain, fmt.Sprintf("localhost:%d", port)}
 }
 
 // derivedMappingLines builds the org, email, path and cloud values a target
 // gets beyond its hostname. Every fiction is tied to fictionOrg so distinct
 // real orgs reverse to distinct targets instead of colliding.
-func derivedMappingLines(baseDomain, orgName, fictionOrg string) []string {
+func derivedMappingEntries(baseDomain, orgName, fictionOrg string) []mappingEntry {
 	org := strings.ToLower(orgName)
 	fictionLower := strings.ToLower(fictionOrg)
 
-	return []string{
-		fmt.Sprintf("org|%s|%s", org, fictionOrg),
-		fmt.Sprintf("email|@%s|@%s.local", baseDomain, fictionLower),
-		fmt.Sprintf("path|/%s/|/dev/%s/", org, fictionLower),
-		fmt.Sprintf("cloud|s3://%s|file:///tmp/%s", org, fictionLower),
+	return []mappingEntry{
+		{mapOrg, org, fictionOrg},
+		{mapEmail, "@" + baseDomain, "@" + fictionLower + ".local"},
+		{mapPath, "/" + org + "/", "/dev/" + fictionLower + "/"},
+		{mapCloud, "s3://" + org, "file:///tmp/" + fictionLower},
 	}
 }
 
@@ -1002,7 +1016,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	// One snapshot for all three checks: nothing is appended until the end.
 	existing := mappingKeys(engDir)
 
-	var lines []string
+	var entries []mappingEntry
 
 	if !existing[mappingKey(mapDomain, baseDomain)] {
 		port, err := allocatePort(engDir, "domain "+baseDomain)
@@ -1010,7 +1024,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, hostLine(baseDomain, port))
+		entries = append(entries, hostEntry(baseDomain, port))
 	}
 
 	// Checked on its own so a domain already mapped by hostname can still be
@@ -1024,7 +1038,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, derivedMappingLines(baseDomain, orgName, fiction)...)
+		entries = append(entries, derivedMappingEntries(baseDomain, orgName, fiction)...)
 	}
 
 	if !existing[mappingKey(mapWildcard, "*."+baseDomain)] {
@@ -1033,7 +1047,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, fmt.Sprintf("wildcard|*.%s|localhost:%d", baseDomain, port))
+		entries = append(entries, mappingEntry{mapWildcard, "*." + baseDomain, fmt.Sprintf("localhost:%d", port)})
 	}
 
 	if domain != baseDomain && !existing[mappingKey(mapDomain, domain)] {
@@ -1042,14 +1056,33 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, hostLine(domain, port))
+		entries = append(entries, hostEntry(domain, port))
 	}
 
-	if len(lines) > 0 {
-		return appendToFile(mappingsPath, strings.Join(lines, "\n"))
+	return appendMappings(mappingsPath, entries)
+}
+
+// appendMappings validates every entry before writing any of them, so a value
+// the line format cannot carry is refused rather than shredding the table.
+// addDomainMappings built its lines by hand and wrote them straight out, which
+// is how "--fiction-org ACME-CORP" (a fiction containing its own real value)
+// and a fiction org holding a newline both got in.
+func appendMappings(path string, entries []mappingEntry) error {
+	if len(entries) == 0 {
+		return nil
 	}
 
-	return nil
+	lines := make([]string, 0, len(entries))
+
+	for _, m := range entries {
+		if err := validateMapping(m); err != nil {
+			return err
+		}
+
+		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
+	}
+
+	return appendToFile(path, strings.Join(lines, "\n"))
 }
 
 func addIPMapping(engDir, ip string) error {
