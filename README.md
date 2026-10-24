@@ -359,15 +359,20 @@ port with nothing on it and fails in that directory with:
 Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)
 ```
 
-Start the proxy and stop it cleanly to clear it:
+Clear it with:
 
 ```bash
-docker compose up -d && docker compose down
+./tanuki reset
 ```
 
-Or remove the `env` block holding `ANTHROPIC_BASE_URL` from
-`.claude/settings.json` by hand. `./tanuki` says so too when it finds the
-redirect with no container running.
+That works with the proxy stopped: the wrapper falls back to a one-off
+container from the same service definition when the main one is not running, so
+every `./tanuki` command stays available while things are broken. Any of them
+also points out the stale redirect when it finds one.
+
+`restart: unless-stopped` does not help here. Docker treats `docker kill` as a
+manual stop, so the container stays exited and the proxy does not come back on
+its own.
 
 ## Fail-closed behaviour
 
