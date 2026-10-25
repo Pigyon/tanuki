@@ -163,13 +163,15 @@ func BenchmarkACReplaceAll(b *testing.B) {
 func TestDomainContinues(t *testing.T) {
 	t.Parallel()
 
+	const host = "acme.com"
+
 	tests := []struct {
 		name     string
 		text     string
 		start, i int
 		want     bool
 	}{
-		{"end of text", "acme.com", 0, 8, false},
+		{"end of text", host, 0, 8, false},
 		{"longer label", "acme.community", 0, 8, true},
 		{"longer name", "acme.com.br", 0, 8, true},
 		{"trailing dot", "acme.com.", 0, 8, false},

@@ -81,6 +81,9 @@ type rewriter struct {
 	// residue finds the org names and custom-rule values a rewrite should have
 	// removed (r2f only), for the fail-closed gate; see survivors.
 	residue *acMachine
+	// fictionLabels holds the hostname labels this engagement's own output is
+	// built from, so the gate does not read them back as real targets.
+	fictionLabels map[string]bool
 	// memo remembers rewrites of long strings. A rewriter is rebuilt whenever
 	// the mappings change, so a remembered result is never stale.
 	memo memoCache[string]
@@ -318,6 +321,7 @@ func newRewriterEscaping(mappings []mappingEntry, direction string, escape func(
 	if direction == directionR2F {
 		rw.terms = termRewriter
 		rw.residue = newResidueMachine(mappings)
+		rw.fictionLabels = fictionLabelsOf(mappings)
 	} else {
 		rw.heads, rw.maxHead = fictionHeads(mappings)
 	}
@@ -333,7 +337,10 @@ func fictionHeads(mappings []mappingEntry) (map[string]bool, int) {
 	longest := 0
 
 	for _, m := range mappings {
-		if m.Type == mapWildcard {
+		// Wildcard fictions are never reversed. Account fictions are all
+		// zeroes and digits, so their prefixes ("0", "00", ...) would hold
+		// back the end of every number the model writes.
+		if m.Type == mapWildcard || m.Type == mapAccount {
 			continue
 		}
 
@@ -384,6 +391,41 @@ func mappingBound(typ string) boundKind {
 	}
 
 	return boundNone
+}
+
+// reservedOrgNames are never spent on an org rule by auto-detection. An org
+// rule replaces a bare word everywhere it appears, and these are words code is
+// made of -- ".net", ".io", ".at", ".network", ".global" and ".online" are all
+// real TLDs, so "using System.Net;", "self.network" and "buffer.at(i)" all
+// read as hostnames. Mapping one rewrote the word for the rest of the
+// engagement and the model was shown mangled source from then on.
+//
+// "tanuki add" and an in-scope entry both bypass this: the operator saying a
+// domain is a target outranks the guess.
+var reservedOrgNames = map[string]bool{
+	"self": true, "this": true, "super": true, "system": true, "user": true,
+	"users": true, "admin": true, "data": true, "config": true, "options": true,
+	"option": true, "buffer": true, "template": true, "example": true,
+	"socket": true, "server": true, "client": true, "request": true,
+	"response": true, "session": true, "context": true, "object": true,
+	"module": true, "package": true, "import": true, "export": true,
+	"default": true, "value": true, "result": true, "error": true,
+	"string": true, "number": true, "index": true, "item": true, "items": true,
+	"name": true, "type": true, "class": true, "props": true, "state": true,
+	"store": true, "cache": true, "queue": true, "event": true, "hello": true,
+	"world": true, "test": true, "tests": true, "spec": true, "build": true,
+	"main": true, "app": true, "api": true, "web": true, "src": true,
+	"lib": true, "docs": true, "doc": true, "file": true, "files": true,
+	"path": true, "node": true, "core": true, "base": true, "util": true,
+	"utils": true, "common": true, "shared": true, "local": true, "global": true,
+}
+
+// worthAnOrgRule reports whether a detected domain's registrable name is
+// specific enough to rewrite as a bare word. Length is deliberately not part
+// of it: a short name is still a real target ("bit.ly", "ge.com"), and the
+// automaton already requires a whole word for one.
+func worthAnOrgRule(orgName string) bool {
+	return orgName != "" && !reservedOrgNames[strings.ToLower(orgName)]
 }
 
 // minOrgPartLen is the shortest org name matched as part of an identifier.
@@ -497,6 +539,36 @@ func newResidueMachine(mappings []mappingEntry) *acMachine {
 	}
 
 	return newACMachine(patterns, patterns, bounds)
+}
+
+// fictionLabelsOf collects the labels tanuki's own fiction is written from.
+func fictionLabelsOf(mappings []mappingEntry) map[string]bool {
+	labels := map[string]bool{"localhost": true}
+
+	for _, m := range mappings {
+		if m.Type == mapOrg {
+			labels[strings.ToLower(m.Fiction)] = true
+		}
+	}
+
+	return labels
+}
+
+// isOwnFiction reports whether a real-looking value is something tanuki wrote.
+// An ignored domain still has its org label rewritten, so "acme.com.br" leaves
+// as "DEVTARGET.com.br", which the recognisers then read as a real domain --
+// and the gate refused the body, naming a fiction string as the leak.
+func (rw *rewriter) isOwnFiction(value string) bool {
+	labels := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == '.' || r == ':'
+	})
+
+	// Only the first label is tanuki's: its own output reads
+	// "DEVTARGET.com.br" or "localhost:9000", fiction first and whatever the
+	// rewrite left behind after it. Matching any label meant a fiction org
+	// named after a common suffix -- TANUKI_FICTION_ORG=com -- suppressed
+	// every real ".com" residual and turned the gate off.
+	return len(labels) > 0 && rw.fictionLabels[labels[0]]
 }
 
 // survivors returns the mapped org names and custom-rule values still in text
@@ -622,7 +694,7 @@ func mappingKeys(engDir string) map[string]bool {
 // lockAllocation serialises allocation in engDir. Checking that a value has no
 // mapping and appending one must be a single step: run apart, concurrent
 // requests naming the same new target each gave it a different fiction.
-func lockAllocation(engDir string) func() {
+func lockAllocation(engDir string) (func(), error) {
 	return acquireFileLock(filepath.Join(engDir, "allocate"))
 }
 
@@ -636,7 +708,11 @@ func mappingExists(engDir, typ, realVal string) bool {
 // addCustomRule adds a real|fiction rule unless one exists for realVal, and
 // reports whether it did.
 func addCustomRule(engDir, realVal, fiction string) (bool, error) {
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapCustom, realVal) {
@@ -662,9 +738,28 @@ func validateMapping(m mappingEntry) error {
 		return fmt.Errorf("mapping %q -> %q has an empty value", m.Real, m.Fiction)
 	case strings.ContainsAny(m.Real, "|\r\n"), strings.ContainsAny(m.Fiction, "|\r\n"):
 		return fmt.Errorf("mapping %q -> %q contains \"|\" or a line break", m.Real, m.Fiction)
+	case rewritesIntoItself(m):
+		return fmt.Errorf("mapping %q -> %q: the fiction still holds the real value", m.Real, m.Fiction)
 	}
 
 	return nil
+}
+
+// rewritesIntoItself reports whether the real value would still be found
+// inside its own replacement, which leaves the gate refusing every body that
+// mentions it for the rest of the engagement -- "internal" -> "internal-dev".
+//
+// The test uses the bound the mapping is matched with, not a plain substring
+// search: the org "ge" sits inside the fiction "DEVTARGET", but no
+// word-bounded rule can match it there, so that mapping is sound.
+func rewritesIntoItself(m mappingEntry) bool {
+	machine := newACMachine([]string{m.Real}, []string{m.Fiction}, []boundKind{mappingBound(m.Type)})
+
+	if m.Type == mapOrg {
+		machine = newOrgMachine([]termEntry{{From: m.Real, To: m.Fiction}})
+	}
+
+	return machine != nil && len(machine.find(m.Fiction)) > 0
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
@@ -682,7 +777,11 @@ func addMapping(engDir, typ, realVal, fiction string) error {
 func nextCounter(engDir, filename, defaultVal string) (int, error) {
 	path := filepath.Join(engDir, filename)
 
-	unlock := acquireFileLock(path)
+	unlock, err := acquireFileLock(path)
+	if err != nil {
+		return 0, err
+	}
+
 	defer unlock()
 
 	n, err := readCounter(path, defaultVal)
@@ -757,34 +856,22 @@ func extractOrgName(domain string) string {
 	return domain
 }
 
-// baseLinesFor returns the mappings a base domain gets: the hostname alone
-// when it was merely seen, the full derived set when it is a target.
-func baseLinesFor(engDir, baseDomain, orgName, baseFiction string, port int, derived bool) ([]string, error) {
-	if !derived {
-		return []string{fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port)}, nil
-	}
-
-	fiction, err := allocateOrgFiction(engDir, baseFiction)
-	if err != nil {
-		return nil, err
-	}
-
-	return baseMappingLines(baseDomain, port, orgName, fiction), nil
+func hostEntry(domain string, port int) mappingEntry {
+	return mappingEntry{mapDomain, domain, fmt.Sprintf("localhost:%d", port)}
 }
 
-// baseMappingLines builds the domain mapping and the org, email, path, and
-// cloud values derived from it. Every fiction is tied to fictionOrg so distinct
+// derivedMappingLines builds the org, email, path and cloud values a target
+// gets beyond its hostname. Every fiction is tied to fictionOrg so distinct
 // real orgs reverse to distinct targets instead of colliding.
-func baseMappingLines(baseDomain string, port int, orgName, fictionOrg string) []string {
+func derivedMappingEntries(baseDomain, orgName, fictionOrg string) []mappingEntry {
 	org := strings.ToLower(orgName)
 	fictionLower := strings.ToLower(fictionOrg)
 
-	return []string{
-		fmt.Sprintf("domain|%s|localhost:%d", baseDomain, port),
-		fmt.Sprintf("org|%s|%s", org, fictionOrg),
-		fmt.Sprintf("email|@%s|@%s.local", baseDomain, fictionLower),
-		fmt.Sprintf("path|/%s/|/dev/%s/", org, fictionLower),
-		fmt.Sprintf("cloud|s3://%s|file:///tmp/%s", org, fictionLower),
+	return []mappingEntry{
+		{mapOrg, org, fictionOrg},
+		{mapEmail, "@" + baseDomain, "@" + fictionLower + ".local"},
+		{mapPath, "/" + org + "/", "/dev/" + fictionLower + "/"},
+		{mapCloud, "s3://" + org, "file:///tmp/" + fictionLower},
 	}
 }
 
@@ -929,6 +1016,31 @@ func usedCounters(m mappingEntry) map[string]int {
 	return used
 }
 
+// minFictionOrgLen keeps a fiction org from being a fragment that appears
+// everywhere; it is also the first label of every residual tanuki suppresses.
+const minFictionOrgLen = 4
+
+// validateFictionOrg rejects a name that cannot safely stand in for an org:
+// one the line format cannot carry, one short enough to collide with ordinary
+// words, or a public suffix, which would make the gate ignore every residual
+// ending in it.
+func validateFictionOrg(name string) error {
+	switch {
+	case len(name) < minFictionOrgLen:
+		return fmt.Errorf("fiction org %q is too short (need %d characters)", name, minFictionOrgLen)
+	case strings.ContainsAny(name, "|\r\n"), strings.ContainsAny(name, " \t"):
+		return fmt.Errorf("fiction org %q contains whitespace, \"|\" or a line break", name)
+	case strings.EqualFold(name, "localhost"):
+		return fmt.Errorf("fiction org %q is the host every fiction address uses", name)
+	}
+
+	if suffix, icann := publicsuffix.PublicSuffix(strings.ToLower(name)); icann && suffix == strings.ToLower(name) {
+		return fmt.Errorf("fiction org %q is a public suffix", name)
+	}
+
+	return nil
+}
+
 func resolveFictionOrg(engDir, fictionOrg string) string {
 	if fictionOrg != "" {
 		return fictionOrg
@@ -967,13 +1079,17 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	baseDomain := extractBaseDomain(domain)
 	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	// One snapshot for all three checks: nothing is appended until the end.
 	existing := mappingKeys(engDir)
 
-	var lines []string
+	var entries []mappingEntry
 
 	if !existing[mappingKey(mapDomain, baseDomain)] {
 		port, err := allocatePort(engDir, "domain "+baseDomain)
@@ -981,12 +1097,21 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		base, err := baseLinesFor(engDir, baseDomain, orgName, baseFiction, port, derived)
+		entries = append(entries, hostEntry(baseDomain, port))
+	}
+
+	// Checked on its own so a domain already mapped by hostname can still be
+	// told it is a target later: a subdomain in scope whose apex is not used
+	// to find the apex mapped, skip the whole block, and leave the org, email,
+	// path and cloud values uncreated -- which the gate does not catch,
+	// because it only looks for values that have a mapping.
+	if derived && !existing[mappingKey(mapOrg, strings.ToLower(orgName))] {
+		fiction, err := allocateOrgFiction(engDir, baseFiction)
 		if err != nil {
 			return err
 		}
 
-		lines = append(lines, base...)
+		entries = append(entries, derivedMappingEntries(baseDomain, orgName, fiction)...)
 	}
 
 	if !existing[mappingKey(mapWildcard, "*."+baseDomain)] {
@@ -995,7 +1120,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, fmt.Sprintf("wildcard|*.%s|localhost:%d", baseDomain, port))
+		entries = append(entries, mappingEntry{mapWildcard, "*." + baseDomain, fmt.Sprintf("localhost:%d", port)})
 	}
 
 	if domain != baseDomain && !existing[mappingKey(mapDomain, domain)] {
@@ -1004,14 +1129,33 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 			return err
 		}
 
-		lines = append(lines, fmt.Sprintf("domain|%s|localhost:%d", domain, port))
+		entries = append(entries, hostEntry(domain, port))
 	}
 
-	if len(lines) > 0 {
-		return appendToFile(mappingsPath, strings.Join(lines, "\n"))
+	return appendMappings(mappingsPath, entries)
+}
+
+// appendMappings validates every entry before writing any of them, so a value
+// the line format cannot carry is refused rather than shredding the table.
+// addDomainMappings built its lines by hand and wrote them straight out, which
+// is how "--fiction-org ACME-CORP" (a fiction containing its own real value)
+// and a fiction org holding a newline both got in.
+func appendMappings(path string, entries []mappingEntry) error {
+	if len(entries) == 0 {
+		return nil
 	}
 
-	return nil
+	lines := make([]string, 0, len(entries))
+
+	for _, m := range entries {
+		if err := validateMapping(m); err != nil {
+			return err
+		}
+
+		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
+	}
+
+	return appendToFile(path, strings.Join(lines, "\n"))
 }
 
 func addIPMapping(engDir, ip string) error {
@@ -1027,7 +1171,11 @@ func addIPMapping(engDir, ip string) error {
 		return nil
 	}
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapIP, ip) {
@@ -1072,7 +1220,8 @@ func isPrivateIP(ip string) bool {
 		return true
 	}
 
-	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
+	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast()
 }
 
 // accountRegexes find AWS account IDs where the context says a twelve-digit
@@ -1099,7 +1248,11 @@ func isFictionAccount(id string) bool {
 // addAccountMapping gives an AWS account ID a fiction of the same shape, so
 // an ARN still reads as an ARN.
 func addAccountMapping(engDir, id string) error {
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	if mappingExists(engDir, mapAccount, id) {
@@ -1187,40 +1340,88 @@ type ipMatch struct {
 	start, end int
 }
 
-// findIPs returns the addresses re finds in text. A candidate is trimmed to
-// its longest valid prefix, loses a single leading colon ("ip:2001:db8::1"
-// otherwise never parsed), and must stand alone -- a letter, digit or "_" on
-// either side means it belongs to a longer token, like the "::1234" inside
-// "arn:aws:iam::123456789012" or the "1.2.3.45" inside "1.2.3.456".
+// findIPs returns the addresses re finds in text.
 func findIPs(text string, re *regexp.Regexp) []ipMatch {
 	var found []ipMatch
 
 	for _, loc := range re.FindAllStringIndex(text, -1) {
-		start := loc[0]
-		if strings.HasPrefix(text[start:loc[1]], ":") && !strings.HasPrefix(text[start:loc[1]], "::") {
-			start++
+		if m, ok := ipAt(text, loc[0], loc[1]); ok {
+			found = append(found, m)
 		}
-
-		ip, n := longestValidIPPrefix(text[start:loc[1]])
-		if n == 0 || !standsAlone(text, start, start+n) {
-			continue
-		}
-
-		found = append(found, ipMatch{ip: ip, start: start, end: start + n})
 	}
 
 	return found
 }
 
-// standsAlone reports whether text[start:end] is not glued to a letter, digit
-// or "_" on either side.
-func standsAlone(text string, start, end int) bool {
-	glued := func(r rune) bool { return isAlnum(r) || r == '_' }
+// ipAt returns the address inside the span [from,to).
+//
+// The patterns are greedy and can begin partway into a word: in
+// "IPv6:2001:db8::1" the leftmost match starts at the "6" of "IPv6" and covers
+// "6:2001:db8::1", itself a valid address. Rejecting the span for that dropped
+// the real address from detection and from the gate alike, so each start is
+// tried until one is not glued to the end of a word.
+//
+// A start is viable when the character in front of it is not alphanumeric, so
+// punctuation an address is written next to still counts:
+// "dump_2001:db8::1.pcap", "[2001:db8::1]", "ip:2001:db8::1". The end must not
+// run into a hex digit, which keeps "::1234" out of "iam::123456789012" and
+// "1.2.3.45" out of "1.2.3.456".
+func ipAt(text string, from, to int) (ipMatch, bool) {
+	for start := from; start < to; start++ {
+		if start > 0 && isAlnumByte(text[start-1]) {
+			continue
+		}
 
-	before, _, _ := around(text, start)
-	_, after, _ := around(text, end)
+		ip, n := longestValidIPPrefix(text[start:to])
+		if n == 0 || addressContinuesAt(text, start+n) {
+			continue
+		}
 
-	return !glued(before) && !glued(after)
+		return ipMatch{ip: ip, start: start, end: start + n}, true
+	}
+
+	return ipMatch{}, false
+}
+
+// versionLead is how far back precededByVersion looks for the word.
+const versionLead = 24
+
+// precededByVersion reports whether the token at i is introduced by the word
+// "version". A four-part version string is shaped exactly like an address --
+// "<AssemblyVersion>1.0.0.0</…>", `"version": "4.17.21.1"` -- and nothing in
+// the number itself tells them apart. Where the text says which it is, take
+// its word; "upgraded from 1.2.3.4" still reads as an address.
+func precededByVersion(text string, i int) bool {
+	from := max(0, i-versionLead)
+
+	lead := strings.ToLower(text[from:i])
+	lead = strings.TrimLeft(strings.TrimRight(lead, " \t\"'>=:"), " \t")
+
+	return strings.HasSuffix(lead, "version") || strings.HasSuffix(lead, "ver")
+}
+
+func isAlnumByte(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func isHexDigit(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'f' || b >= 'A' && b <= 'F'
+}
+
+// addressContinuesAt reports whether an address carries on at i, either
+// directly or through a separator with another hex digit behind it.
+func addressContinuesAt(text string, i int) bool {
+	if i >= len(text) {
+		return false
+	}
+
+	if isHexDigit(text[i]) {
+		return true
+	}
+
+	isSeparator := text[i] == '.' || text[i] == ':'
+
+	return isSeparator && i+1 < len(text) && isHexDigit(text[i+1])
 }
 
 func longestValidIPPrefix(candidate string) (canonical string, prefixLen int) {
@@ -1293,9 +1494,9 @@ func isRealDomain(domain string) bool {
 }
 
 // hostContext reports whether text[start:end] sits where only a hostname
-// does: after "://" or "@", or with a path or port right after it. A bare
-// token on an uncommon TLD is far more often code than a domain, so it needs
-// one of these markers.
+// does: after "://" or "@", or with a path right after it. A bare token on an
+// uncommon TLD is far more often code than a domain, so it needs one of these
+// markers.
 func hostContext(text string, start, end int) bool {
 	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
 		return true
@@ -1307,12 +1508,85 @@ func hostContext(text string, start, end int) bool {
 
 	switch text[end] {
 	case '/':
-		return true
+		// A trailing slash is the weakest of the markers: "gopkg.in/yaml.v3",
+		// "./scripts/build.sh/" and "docs.rs/serde" are module and file paths,
+		// not hosts. Two labels need a scheme or an "@" instead.
+		return strings.Count(text[start:end], ".") >= 2
 	case ':':
-		return end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9'
+		return portThenPath(text, end+1)
 	default:
 		return false
 	}
+}
+
+// portThenPath reports whether text from i is a port followed by a path. The
+// path is what makes it a port: ".md", ".py", ".rs" and ".sh" are real TLDs,
+// so "README.md:3" and "handlers.py:91" are hostname-and-port by every other
+// measure, and dev output is full of them.
+func portThenPath(text string, i int) bool {
+	digits := 0
+
+	for i+digits < len(text) && digits <= 5 {
+		if text[i+digits] < '0' || text[i+digits] > '9' {
+			break
+		}
+
+		digits++
+	}
+
+	return digits > 0 && digits <= 5 && i+digits < len(text) && text[i+digits] == '/'
+}
+
+// isDetectableHost reports whether the token at [start,end) is a hostname
+// rather than something code is made of.
+//
+// Where the surroundings say it is a host, any real TLD counts. A bare token
+// needs a common TLD and a registrable name that is not an everyday word:
+// ".net", ".io", ".at", ".network", ".global" and ".online" are all real TLDs,
+// so "using System.Net;", "self.network" and "buffer.at(i)" are hostnames by
+// shape alone, and mapping them rewrote the source the model was reading.
+func isDetectableHost(text, domain string, start, end int) bool {
+	if !worthAnOrgRule(extractOrgName(domain)) {
+		return false
+	}
+
+	if hostContext(text, start, end) {
+		return hasCommonTLD(domain) || isRealDomain(domain)
+	}
+
+	return hasCommonTLD(domain) || deepEnoughToBeAHost(domain)
+}
+
+// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD when it
+// has three or more labels.
+//
+// Enumeration output is where targets arrive -- subfinder, nmap, httpx and
+// report tables list bare hostnames with no scheme, "@" or path around them --
+// and the curated list covers 72 of some 1500 real TLDs, so "api.target.in"
+// was invisible to detection and to the gate alike. Three labels is what
+// separates those from the two-label attribute access the curated list exists
+// to filter.
+//
+// A TLD that is also a common file extension is refused here: ".sh", ".py",
+// ".rs", ".md", ".zip" and ".mov" are all real, and "scripts/build.prod.sh" is
+// not a hostname.
+func deepEnoughToBeAHost(domain string) bool {
+	labels := strings.Split(domain, ".")
+	if len(labels) < 3 {
+		return false
+	}
+
+	if fileExtensionTLDs[labels[len(labels)-1]] {
+		return false
+	}
+
+	return isRealDomain(domain)
+}
+
+// fileExtensionTLDs are real TLDs that are far more often a file extension.
+var fileExtensionTLDs = map[string]bool{
+	"sh": true, "py": true, "rs": true, "md": true, "pl": true, "pm": true,
+	"so": true, "cc": true, "ml": true, "zip": true, "mov": true, "bat": true,
 }
 
 // scanned is what scanTargets found in one string.
@@ -1340,15 +1614,17 @@ func scanTargets(text string) scanned {
 			continue
 		}
 
-		// A common TLD stands on its own; any other real TLD needs the
-		// surroundings to say the token is a host, not an attribute access.
-		if hasCommonTLD(domain) || (isRealDomain(domain) && hostContext(text, loc[0], loc[1])) {
+		if isDetectableHost(text, domain, loc[0], loc[1]) {
 			seen[domain] = true
 			s.domains = append(s.domains, domain)
 		}
 	}
 
 	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {
+		if precededByVersion(text, m.start) {
+			continue
+		}
+
 		if !isPrivateIP(m.ip) && !seen[m.ip] {
 			seen[m.ip] = true
 			s.ips = append(s.ips, m.ip)

@@ -285,3 +285,32 @@ func TestReverseSSEEventKeepsThinkingAndFraming(t *testing.T) {
 		t.Errorf("framing changed: %q", got)
 	}
 }
+
+// TestCollidingToolArgumentKeysKeepBothValues: two keys that rewrite to the
+// same name used to overwrite one another, so an argument vanished and which
+// one survived depended on map iteration order.
+func TestCollidingToolArgumentKeysKeepBothValues(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	const body = `{"messages":[{"role":"user","content":[` +
+		`{"type":"tool_use","id":"t1","name":"X","input":{"amazon":1,"AMAZON":2}}]}]}`
+
+	first, err := anonymizeUpstreamBody([]byte(body))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	args, _ := field(t, first, "messages", 0, "content", 0, "input").(map[string]any)
+	if len(args) != 2 {
+		t.Errorf("tool arguments lost a key: %v", args)
+	}
+
+	second, err := anonymizeUpstreamBody([]byte(body))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	if string(first) != string(second) {
+		t.Errorf("the same body produced two results:\n %s\n %s", first, second)
+	}
+}

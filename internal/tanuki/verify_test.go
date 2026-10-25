@@ -60,9 +60,9 @@ func TestVerifyMappingsPassesOnASoundTable(t *testing.T) {
 func TestVerifyMappingsCatchesANoOpMapping(t *testing.T) {
 	engDir := newTestEngagement(t, testBaseDomain)
 
-	if err := addMapping(engDir, "custom", "prod-secret", "prod-secret"); err != nil {
-		t.Fatalf("addMapping: %v", err)
-	}
+	// addMapping refuses this now; a hand-edited or older table can still
+	// hold it, which is what verify is for.
+	writeRawMapping(t, engDir, "custom|prod-secret|prod-secret")
 
 	out, code := captureStdout(t, func() int {
 		return verifyMappings(loadMappings(engDir))

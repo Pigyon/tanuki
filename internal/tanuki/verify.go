@@ -127,7 +127,9 @@ func verifyInput(paths []string, rw *rewriter) int {
 	for _, source := range readSources(paths) {
 		rewritten := rw.rewrite(source.text)
 
-		residual := slices.Concat(residualTargets(nil, rewritten), rw.survivors(rewritten))
+		found := slices.DeleteFunc(residualTargets(nil, rewritten), rw.isOwnFiction)
+
+		residual := slices.Concat(found, rw.survivors(rewritten))
 		if len(residual) == 0 {
 			fmt.Printf("  ok    %s\n", source.name)
 			continue

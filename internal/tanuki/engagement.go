@@ -13,6 +13,10 @@ import (
 // variables, so an engagement can be fully configured via compose.yaml.
 func loadEnvConfig(engDir string) error {
 	if org := os.Getenv("TANUKI_FICTION_ORG"); org != "" {
+		if err := validateFictionOrg(org); err != nil {
+			return fmt.Errorf("TANUKI_FICTION_ORG: %w", err)
+		}
+
 		if err := writeFileContent(filepath.Join(engDir, "fiction_org"), org); err != nil {
 			return err
 		}
@@ -155,6 +159,10 @@ func cmdInit(args []string) {
 		fictionOrg = defaultFictionOrg
 	}
 
+	if err := validateFictionOrg(fictionOrg); err != nil {
+		fatal(err.Error())
+	}
+
 	engDir := engagementDir(name)
 	if fileExists(engDir) {
 		fatal(fmt.Sprintf("engagement %q already exists, use: tanuki activate %s", name, name))
@@ -180,6 +188,12 @@ func cmdAdd(args []string) {
 
 	if len(domains) == 0 {
 		fatal("Usage: tanuki add <domain>... [--fiction-org NAME]")
+	}
+
+	if fictionOrg != "" {
+		if err := validateFictionOrg(fictionOrg); err != nil {
+			fatal(err.Error())
+		}
 	}
 
 	eng, err := requireEngagement()

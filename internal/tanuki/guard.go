@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // Policy for a real value that is still present after anonymization.
@@ -40,6 +42,13 @@ func onLeakPolicy() string {
 var builtinIgnored = []string{
 	"anthropic.com", "claude.ai", "claude.com", "json-schema.org",
 	"github.com", "githubusercontent.com", "google.com", "googleapis.com",
+	// Package registries and documentation hosts: they appear in go.mod,
+	// package.json, imports and docs links on nearly every coding turn.
+	"golang.org", "go.dev", "gopkg.in", "pkg.go.dev",
+	"npmjs.com", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
+	"stackoverflow.com", "mozilla.org", "w3.org", "readthedocs.io",
+	// Reserved for documentation by RFC 2606; never a real target.
+	"example.com", "example.org", "example.net",
 }
 
 // userEmailRegex pulls the operator's own address out of the "# userEmail"
@@ -54,51 +63,89 @@ var userEmailRegex = regexp.MustCompile(`(?is)#\s*userEmail\b.{0,200}?([a-z0-9._
 // if Claude Code's userEmail block is present, so a single request can ignore
 // it without it ever becoming a mapping. Empty for any other client or body.
 //
-// It walks the decoded body and refuses to read the marker out of a
-// tool_result block. That block carries whatever the target returned -- an HTTP
-// response, command output, a fetched page -- so trusting it would let a target
-// forge "# userEmail ...@real-target.com" to exempt itself from anonymization
-// and leak. The genuine block is a Claude Code system reminder, never tool
-// output, so skipping tool_result loses nothing.
+// Only the places Claude Code writes that block are read: the system prompt,
+// and user-role content that is not a tool_result. Everything else carries
+// text a target may have chosen. A page saying "# userEmail admin@target.com"
+// is summarised by the model into an assistant block, or returned through a
+// tool_result, and reading the marker there let the target exempt itself from
+// anonymization for the rest of the session -- domain, subdomains and all.
 func operatorIgnoredDomains(doc any) []string {
-	seen := map[string]bool{}
-	out := []string{}
-
-	var walk func(v any)
-
-	walk = func(v any) {
-		switch t := v.(type) {
-		case map[string]any:
-			if t[typeKey] == "tool_result" {
-				return
-			}
-
-			for _, val := range t {
-				walk(val)
-			}
-		case []any:
-			for _, item := range t {
-				walk(item)
-			}
-		case string:
-			for _, m := range userEmailRegex.FindAllStringSubmatch(t, -1) {
-				at := strings.LastIndex(m[1], "@")
-				if at < 0 {
-					continue
-				}
-
-				base := extractBaseDomain(strings.ToLower(m[1][at+1:]))
-				if base != "" && !seen[base] {
-					seen[base] = true
-					out = append(out, base)
-				}
-			}
-		}
+	body, _ := doc.(map[string]any)
+	if body == nil {
+		return nil
 	}
 
-	walk(doc)
+	found := &operatorEmails{seen: map[string]bool{}}
 
-	return out
+	found.scan(body["system"])
+
+	// Only the first user message. Claude Code injects the account context at
+	// the start of the conversation and resends it every turn, while later
+	// user messages carry @-mentioned file contents and pastes -- target
+	// material on an engagement, and a place to plant the marker.
+	messages, _ := body["messages"].([]any)
+	for _, m := range messages {
+		msg, _ := m.(map[string]any)
+		if msg == nil || msg["role"] != "user" {
+			continue
+		}
+
+		found.scan(msg["content"])
+
+		break
+	}
+
+	return found.domains
+}
+
+// operatorEmails collects the base domains of the operator addresses found in
+// the parts of a body that Claude Code, not a target, writes.
+type operatorEmails struct {
+	seen    map[string]bool
+	domains []string
+}
+
+func (o *operatorEmails) scan(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		if t[typeKey] == "tool_result" {
+			return
+		}
+
+		for _, val := range t {
+			o.scan(val)
+		}
+	case []any:
+		for _, item := range t {
+			o.scan(item)
+		}
+	case string:
+		o.add(t)
+	}
+}
+
+func (o *operatorEmails) add(text string) {
+	for _, m := range userEmailRegex.FindAllStringSubmatch(text, -1) {
+		at := strings.LastIndex(m[1], "@")
+		if at < 0 {
+			continue
+		}
+
+		base := extractBaseDomain(strings.ToLower(m[1][at+1:]))
+
+		// A bare public suffix is not an address anyone owns: extractBaseDomain
+		// hands "co.uk" straight back, and ignoring that exempts every domain
+		// under it. One forged "# userEmail admin@co.uk" turned off
+		// anonymization for all of .co.uk.
+		if suffix, _ := publicsuffix.PublicSuffix(base); base == "" || base == suffix {
+			continue
+		}
+
+		if !o.seen[base] {
+			o.seen[base] = true
+			o.domains = append(o.domains, base)
+		}
+	}
 }
 
 // isIgnoredDomain reports whether domain, the base domain it belongs to, or

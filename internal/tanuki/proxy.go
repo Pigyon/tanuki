@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -108,6 +109,16 @@ func runProxy() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
+	}
+
+	// configureHooks pointed Claude Code at this proxy on start; undo that now.
+	// Left behind, ANTHROPIC_BASE_URL sends the next session to a port nothing
+	// is listening on (ECONNREFUSED), and every tool call tries to docker exec
+	// a container that is gone. A restart re-applies it, so this is only ever
+	// in effect while the proxy is actually down.
+	settingsPath := filepath.Join(".claude", "settings.json")
+	if fileExists(settingsPath) {
+		removeTanukiSettings(settingsPath)
 	}
 }
 
@@ -592,7 +603,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	if !isJSON {
 		out := rw.rewrite(string(body))
 
-		if err := checkResidual(rw.survivors(out), extraIgnored, out); err != nil {
+		if err := checkResidual(rw, rw.survivors(out), extraIgnored, out); err != nil {
 			return nil, err
 		}
 
@@ -611,7 +622,7 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 		return out
 	})
 
-	if err := checkResidual(survived, extraIgnored, jsonStrings(doc)...); err != nil {
+	if err := checkResidual(rw, survived, extraIgnored, jsonStrings(doc)...); err != nil {
 		return nil, err
 	}
 
@@ -648,10 +659,12 @@ func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
 // The error names counts, never values. It is returned to the local client,
 // which may fold the text into its next prompt, so the values go to the log
 // the operator can read with "docker logs tanuki" instead.
-func checkResidual(survived, extraIgnored []string, texts ...string) error {
+func checkResidual(rw *rewriter, survived, extraIgnored []string, texts ...string) error {
 	slices.Sort(survived)
 
-	residual := slices.Concat(residualTargets(extraIgnored, texts...), slices.Compact(survived))
+	found := slices.DeleteFunc(residualTargets(extraIgnored, texts...), rw.isOwnFiction)
+
+	residual := slices.Concat(found, slices.Compact(survived))
 	if len(residual) == 0 {
 		return nil
 	}

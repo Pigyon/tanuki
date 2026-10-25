@@ -323,7 +323,11 @@ func giveToHostUser(path string) {
 }
 
 func appendToFile(path, line string) error {
-	unlock := acquireFileLock(path)
+	unlock, err := acquireFileLock(path)
+	if err != nil {
+		return err
+	}
+
 	defer unlock()
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

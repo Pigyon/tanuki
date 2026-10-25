@@ -1,8 +1,10 @@
 package tanuki
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -64,19 +66,50 @@ func (s scope) covers(domain string) bool {
 }
 
 // isTarget reports whether a detected domain earns the derived mappings.
+//
+// With no scope set, a common TLD stands in for one: that is every domain
+// detection used to find, so an engagement without a scope behaves as before.
+// A domain recognised only by its context -- any real TLD after "://", after
+// "@" or before a path -- is hidden but gets no org rule, because an org rule
+// rewrites a bare word everywhere and that guess is too weak to spend one on.
+// "tanuki add" and an explicit scope entry both still map in full.
 func (s scope) isTarget(domain string) bool {
-	return len(s) == 0 || s.covers(domain)
+	if len(s) == 0 {
+		return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
+	}
+
+	return s.covers(domain)
 }
 
 // addToScope appends a pattern unless it is already covered, and reports
 // whether it did.
 func addToScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
-	if p == "" || strings.ContainsAny(p, "|\r\n") {
-		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
+	if !scopePatternRegex.MatchString(p) {
+		return false, fmt.Errorf("invalid scope pattern %q: expected a domain such as example.com or *.example.com", pattern)
 	}
 
-	unlock := lockAllocation(engDir)
+	added, err := appendScopePattern(engDir, p)
+	if err != nil || !added {
+		return added, err
+	}
+
+	// Promotion runs outside the lock: addDomain takes the same one.
+	return true, promoteToTargets(engDir, p)
+}
+
+// scopePatternRegex is a hostname, once the leading "*." is gone. Without it a
+// pasted URL or a typo was stored as a pattern that covers() can never match,
+// and because any non-empty scope makes everything outside it host-only, a
+// scope of nothing but typos quietly downgraded every target.
+var scopePatternRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+func appendScopePattern(engDir, p string) (bool, error) {
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	if slices.Contains(loadScope(engDir), p) {
@@ -86,11 +119,39 @@ func addToScope(engDir, pattern string) (bool, error) {
 	return true, appendToFile(filepath.Join(engDir, scopeFile), p)
 }
 
+// promoteToTargets gives the derived mappings to domains that were mapped by
+// hostname alone before this pattern said they were targets. Detection never
+// revisits a domain it has already mapped, so without this a domain mapped
+// before its scope entry stayed host-only for the rest of the engagement.
+func promoteToTargets(engDir, pattern string) error {
+	covering := scope{pattern}
+
+	var err error
+
+	for _, m := range loadMappings(engDir) {
+		if m.Type != mapDomain || !covering.covers(m.Real) {
+			continue
+		}
+
+		if addErr := addDomain(engDir, m.Real, ""); addErr != nil {
+			err = errors.Join(err, fmt.Errorf("promoting %s: %w", m.Real, addErr))
+		}
+	}
+
+	proxyCache.invalidate()
+
+	return err
+}
+
 // removeFromScope drops a pattern and reports whether it was there.
 func removeFromScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
 
-	unlock := lockAllocation(engDir)
+	unlock, err := lockAllocation(engDir)
+	if err != nil {
+		return false, err
+	}
+
 	defer unlock()
 
 	current := loadScope(engDir)
@@ -152,6 +213,7 @@ func cmdScope(args []string) {
 		scopeChange(engDir, args[1:], addToScope, "Added to scope", "Already in scope")
 	case "rm":
 		scopeChange(engDir, args[1:], removeFromScope, "Removed from scope", "Not in scope")
+		warnOrphanedDerived(engDir, args[1:])
 	default:
 		fatal("Usage: tanuki scope [list | add <domain> | rm <domain>]")
 	}
@@ -189,4 +251,45 @@ func showScope(engDir string) {
 	for _, p := range current {
 		fmt.Printf("  %s and *.%s\n", p, p)
 	}
+}
+
+// warnOrphanedDerived says which derived mappings a removed pattern leaves
+// behind. They are not deleted: the model has already been shown those
+// fictions, and dropping them would leave its earlier replies unreversible.
+func warnOrphanedDerived(engDir string, args []string) {
+	if len(args) == 0 {
+		return
+	}
+
+	removed := scope{normalizeScopePattern(args[0])}
+	mappings := loadMappings(engDir)
+
+	// The org names belonging to domains the pattern covered.
+	orgs := map[string]bool{}
+
+	for _, m := range mappings {
+		if m.Type == mapDomain && removed.covers(m.Real) {
+			orgs[strings.ToLower(extractOrgName(m.Real))] = true
+		}
+	}
+
+	var orphaned []string
+
+	for _, m := range mappings {
+		if m.Type == mapOrg && orgs[m.Real] {
+			orphaned = append(orphaned, m.Real)
+		}
+	}
+
+	if len(orphaned) == 0 {
+		return
+	}
+
+	fmt.Println("[tanuki] Mappings already created for it are kept, so earlier replies still reverse:")
+
+	for _, name := range orphaned {
+		fmt.Printf("  org %q is still rewritten\n", name)
+	}
+
+	fmt.Println("[tanuki] Start a new engagement if it must stop being rewritten.")
 }

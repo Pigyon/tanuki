@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -300,6 +301,52 @@ func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 	}
 }
 
+// TestShutdownCleanupReversesConfigure guards the proxy's shutdown path: what
+// configureHooks writes on start, removeTanukiSettings must take back on stop.
+// Left behind, ANTHROPIC_BASE_URL points the next session at a dead port
+// (ECONNREFUSED). The operator's own settings must survive either way.
+func TestShutdownCleanupReversesConfigure(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	ownSettings := `{"permissions":{"allow":["Bash(go test:*)"]},"env":{"MY_VAR":"keep-me"}}`
+	settingsPath := filepath.Join(".claude", "settings.json")
+
+	if err := os.WriteFile(settingsPath, []byte(ownSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureHooks(); err != nil {
+		t.Fatalf("configureHooks: %v", err)
+	}
+
+	if raw, _ := os.ReadFile(settingsPath); !strings.Contains(string(raw), "ANTHROPIC_BASE_URL") {
+		t.Fatal("configureHooks did not install the proxy redirect")
+	}
+
+	removeTanukiSettings(settingsPath)
+
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json gone, but it held the operator's own config: %v", err)
+	}
+
+	if strings.Contains(string(raw), "ANTHROPIC_BASE_URL") {
+		t.Error("redirect survived shutdown; next session would hit a dead port")
+	}
+
+	if strings.Contains(string(raw), "tanuki") {
+		t.Error("tanuki hook survived shutdown; every tool call would docker exec a gone container")
+	}
+
+	if !strings.Contains(string(raw), "keep-me") || !strings.Contains(string(raw), "go test") {
+		t.Errorf("operator's own settings were lost: %s", raw)
+	}
+}
+
 // TestEnvSeedsSubdomains: a subdomain in TANUKI_DOMAINS was skipped whenever
 // its apex was already mapped, which the documented example asks for.
 func TestEnvSeedsSubdomains(t *testing.T) {
@@ -382,5 +429,88 @@ func TestParseArgs(t *testing.T) {
 		if _, _, err := parseArgs(args); err == nil {
 			t.Errorf("parseArgs(%v) accepted a bad option", args)
 		}
+	}
+}
+
+// TestAddDomainValidatesItsMappings: addDomainMappings built its lines by hand
+// and wrote them straight out, so validateMapping never saw them.
+// "--fiction-org ACME-CORP" produced org|acme|ACME-CORP, which rewrites "acme"
+// into a value that still holds it -- after which the gate refused every body
+// mentioning the target, for good. A newline in the fiction org was worse: it
+// split the line and left four orphan rows that loadMappings dropped with a
+// warning, one of them a four-character pattern reversing to the real domain.
+func TestAddDomainValidatesItsMappings(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, fictionOrg := range []string{"ACME-CORP", "DEV\nTARGET", "A|B", "acme-dev"} {
+		if err := addDomain(engDir, "acme.com", fictionOrg); err == nil {
+			t.Errorf("addDomain accepted --fiction-org %q", fictionOrg)
+		}
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("a rejected add wrote %d mappings: %+v", len(got), got)
+	}
+
+	if err := addDomain(engDir, "acme.com", "SAFECORP"); err != nil {
+		t.Errorf("a sound fiction org was rejected: %v", err)
+	}
+}
+
+// TestShortOrgInsideItsFictionIsAllowed: the self-containment check was a
+// plain substring search, so the org "ge" was refused for sitting inside
+// "DEVTARGET" -- where no word-bounded rule can ever match it.
+func TestShortOrgInsideItsFictionIsAllowed(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addDomain(engDir, "ge.com", "DEVTARGET"); err != nil {
+		t.Errorf("addDomain(ge.com): %v", err)
+	}
+}
+
+// TestAllocationRefusesWhenItCannotLock: the lock used to log a warning and
+// return a no-op release when it could not be taken, so callers allocated
+// unserialised -- the duplicate-fiction bug the lock exists to prevent. Under
+// contention that produced several conflicting mapping sets for one target,
+// each with its own port and org number, leaving the reverse pass ambiguous.
+func TestAllocationRefusesWhenItCannotLock(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	// A lock path that cannot be opened as a file.
+	if err := os.MkdirAll(filepath.Join(engDir, "allocate.lock"), 0o750); err != nil {
+		t.Fatalf("seeding the blocked lock: %v", err)
+	}
+
+	var wg sync.WaitGroup
+
+	failures := make(chan struct{}, 16)
+
+	for range 16 {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			if _, err := mapTargets(engDir, nil, "scan newtarget.com"); err != nil {
+				failures <- struct{}{}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(failures)
+
+	if len(failures) != 16 {
+		t.Errorf("%d of 16 allocations refused, want all of them", len(failures))
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("an unserialised allocation wrote %d mappings: %+v", len(got), got)
 	}
 }

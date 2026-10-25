@@ -454,6 +454,47 @@ func TestTLDDetectionAvoidsCodePatterns(t *testing.T) {
 // TestFindNewDomainsDetectsApexDomains is a regression test: a prompt
 // mentioning only a bare apex domain used to produce no mapping at all,
 // so the real domain was sent to the upstream API unrewritten.
+// TestCodeIsNotReadAsHostnames: ".net", ".io", ".at", ".network", ".global"
+// and ".online" are real TLDs, so ordinary source reads as hostnames by shape
+// alone. Mapping one rewrote the word everywhere, and the model was shown
+// mangled code for the rest of the engagement.
+func TestCodeIsNotReadAsHostnames(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	code := []string{
+		"self.network = nn.Sequential()", "using System.Net;", `require("socket.io")`,
+		"if (options.global) {}", "if (user.online) {}", "package hello.world;",
+		"return buffer.at(index);", "https://pkg.go.dev/net/http",
+		"require golang.org/x/net v0.38.0", "https://example.com/api/v1",
+		"see https://stackoverflow.com/q/1", "import numpy", "docs.rs/serde",
+	}
+	for _, text := range code {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
+// TestShortAndOrdinaryTargetsStillDetected guards the other side of that: a
+// real target must not be filtered out for having a short or plain name.
+func TestShortAndOrdinaryTargetsStillDetected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"scan bounty.amazon.com", "target.io is up", "mail ops@acmecorp.net",
+		"check evilcorp.ai", "bit.ly/abc", "api.target.com", "ge.com",
+		"vpn.corp-target.net", "staging.hackerone.com",
+	} {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
 // TestRealTLDsDetectedInHostContext: the curated TLD list left real domains
 // on uncommon TLDs (.in, .it, .pl, .app) undetected, so they went upstream in
 // clear. Where the surroundings say the token is a host, any ICANN suffix is
@@ -467,7 +508,7 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 		"https://portal.acme.in/login",
 		"see shop.acme.it/cart",
 		"mail admin@acme.pl today",
-		"connect to acme.app:8443",
+		"connect to acme.app:8443/health",
 		"//cdn.acme.pizza/asset.js",
 	}
 
@@ -478,9 +519,51 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 	}
 }
 
+// TestBareEnumerationOutputIsDetected: enumeration output is where targets
+// arrive, and it lists bare hostnames with no scheme, "@" or path around them.
+// The curated list covers 72 of some 1500 real TLDs, so a target on any other
+// was invisible to detection and to the gate alike -- a silent leak.
+func TestBareEnumerationOutputIsDetected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"api.target.in", "www.target.in", "staging.target.app", "vpn.target.site",
+		"host api.target.in is up", "| api.target.in | 200 |",
+		"Nmap scan report for api.target.in (203.0.113.5)",
+	} {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
+// TestDeepCodeTokensAreNotHosts is the other side: three labels is only a
+// signal when the last one is not a file extension and the registrable name is
+// not an everyday word.
+func TestDeepCodeTokensAreNotHosts(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	for _, text := range []string{
+		"return item.data.id;", "const x = this.props.id", "self.config.ini",
+		"com.example.App", "org.apache.commons", "java.util.List",
+		"numpy.linalg.norm", "scripts/build.prod.sh", "tests/unit.api.py",
+		"a.b.md", "require gopkg.in/yaml.v3", "./scripts/build.sh/",
+		"url = docs.rs/serde/latest/",
+	} {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
 // TestUncommonTLDsStayFilteredAsBareTokens: an attribute access spells a real
 // TLD often enough (.id, .in, .it, .so) that a bare token on one must not be
 // taken for a domain, or the org rule then rewrites that word everywhere.
+// A file:line reference is the same shape, and dev output is full of them.
 func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
 	t.Parallel()
 
@@ -490,6 +573,9 @@ func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
 		"item.data.id", "req.session.id", "for x in list.in",
 		"self.config.ini", "value.as", "promise.so",
 		"readme.md", "config.yaml", "main.go", "styles.css",
+		// .md, .py, .rs, .sh and .pl are all real TLDs.
+		"README.md:3", "src/main.rs:118: warning", "handlers.py:91",
+		"./scripts/deploy.sh:42: command not found", "lib.pl:7",
 	}
 
 	for _, text := range code {
@@ -814,14 +900,91 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 func TestIPsMustStandAlone(t *testing.T) {
 	t.Parallel()
 
+	// "ip2001:db8::1" is deliberately absent: a label running straight into an
+	// address with no separator is indistinguishable from "IPv6:2001:db8::1",
+	// which is a form tools really produce. The scan takes the first start
+	// that is not glued to a word, so this yields the partial "db8::1" -- a
+	// useless mapping for an input nothing writes, which is the cheaper half
+	// of the trade.
 	for _, text := range []string{
 		"arn:aws:iam::123456789012:role/x",
 		"Self::de and Foo::bar",
 		"v=1.2.3.456",
-		"ip2001:db8::1",
 	} {
 		if ips := targetsIn(text).ips; len(ips) > 0 {
 			t.Errorf("targetsIn(%q) found addresses %v", text, ips)
+		}
+	}
+}
+
+// TestAddressNextToPunctuationIsStillFound: requiring a non-word character on
+// both sides went too far and stopped finding real addresses written beside an
+// underscore or a file extension, which is a leak in both detection and the
+// gate.
+func TestAddressNextToPunctuationIsStillFound(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"2001:db8::1_old", "dump_2001:db8::1.pcap",
+		"[2001:db8::1]:443", "(2001:db8::1)", "=2001:db8::1",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestAddressAfterALabelIsFound: the patterns are greedy and can begin
+// partway into a word, so "IPv6:2001:db8::1" matched from the "6" of "IPv6".
+// Rejecting that span dropped the real address from detection and from the
+// gate, which is a silent leak rather than a refusal.
+func TestAddressAfterALabelIsFound(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"IPv6:2001:db8::1", "IPV6:2001:db8::1", "eth0:2001:db8::1",
+		"v6:2001:db8::1", "inet6:2001:db8::1",
+		"nmap: IPv6:2600:1f18:dead:beef::5 open",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestVersionStringsAreNotAddresses: a four-part version is shaped exactly
+// like an address, and nothing in the number tells them apart. Where the text
+// says which it is, take its word.
+func TestVersionStringsAreNotAddresses(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"<AssemblyVersion>1.0.0.0</AssemblyVersion>",
+		`"version": "4.17.21.1"`,
+		"version=1.2.3.4",
+		"nginx version 1.2.3.4",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+
+	// Without that word it is read as an address, which is the safe default.
+	for _, text := range []string{"ping 203.0.113.5", "host 8.8.8.8", "upgraded to 1.2.3.5"} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestLinkLocalAddressesAreNotTargets: fe80::/10 identifies an interface, not
+// a host anyone can route to.
+func TestLinkLocalAddressesAreNotTargets(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{"fe80::1", "ping fe80::1%eth0"} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
 		}
 	}
 }
@@ -963,6 +1126,44 @@ func TestShortOrgNameStaysWholeWord(t *testing.T) {
 		if got := r2f.rewrite(in); got != in {
 			t.Errorf("short org rewritten inside %q: %q", in, got)
 		}
+	}
+}
+
+// TestAccountFictionsDoNotHoldBackNumbers: an account fiction is all digits,
+// so its prefixes ("0", "00") entered the set of fiction starts and the
+// stream held back the end of every number the model wrote.
+func TestAccountFictionsDoNotHoldBackNumbers(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+
+	if err := addAccountMapping(engDir, "123456789012"); err != nil {
+		t.Fatalf("addAccountMapping: %v", err)
+	}
+
+	_, f2r := rewriters(t, engDir)
+
+	for _, text := range []string{"the count is 0", "value 10", "100% of 0"} {
+		if send, hold := f2r.splitHeld(text); hold != "" || send != text {
+			t.Errorf("splitHeld(%q) = %q, %q; want the whole string sent", text, send, hold)
+		}
+	}
+}
+
+// TestFictionContainingItsRealValueIsRejected: the rewrite would put the real
+// value back inside its own replacement, and the gate then refused every body
+// for the rest of the engagement.
+func TestFictionContainingItsRealValueIsRejected(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if _, err := addCustomRule(engDir, "internal", "internal-dev"); err == nil {
+		t.Error("a rule whose fiction contains its real value was accepted")
+	}
+
+	if _, err := addCustomRule(engDir, "internal", "service-dev"); err != nil {
+		t.Errorf("a sound rule was rejected: %v", err)
 	}
 }
 

@@ -192,6 +192,12 @@ those domains as targets while anything else it detects is merely hidden:
 ./tanuki scope list
 ```
 
+Adding a domain to the scope promotes it even if it was already mapped, so you
+can set the scope part-way through an engagement. Removing one stops new domains
+earning an org name, but keeps the mappings already made: the model has been
+shown those fictions, so dropping them would leave its earlier replies
+unreversible.
+
 | | In scope | Detected, out of scope |
 | --- | --- | --- |
 | Hostname → `localhost:<port>` | yes | yes |
@@ -203,9 +209,11 @@ Without a scope, one `docs.python.org` in tool output makes `python` an org, and
 that domain still gets a hostname mapping, so nothing about it leaks, but the
 word keeps its meaning.
 
-An empty scope means every detected domain is treated as a target, which is how
-an engagement behaves until you set one. `./tanuki add` always creates the full
-set of mappings: it is an explicit statement that the domain is a target.
+With no scope set, a common TLD stands in for one, so an engagement without a
+scope behaves as it always has. A domain recognised only by its context — any
+real TLD after `://`, after `@`, or before a path — is hidden either way, but
+never earns an org name on a guess that weak. `./tanuki add` always creates the
+full set: it is an explicit statement that the domain is a target.
 
 Pre-configure it in `compose.yaml` with `TANUKI_SCOPE=amazon.com,example.org`.
 
@@ -253,7 +261,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | Type            | Detection                              | Fiction                    |
 | --------------- | -------------------------------------- | -------------------------- |
 | Domains         | Auto-detected in prompts & tool output; any real TLD in a URL, after `@`, or with a path/port | `localhost:<port>`         |
-| Org names       | In-scope domains only (see [Scope](#scope)); matched inside identifiers too (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
+| Org names       | In-scope domains, or a common TLD when no scope is set (see [Scope](#scope)); matched inside identifiers too (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
 | Emails          | Derived from domain                    | `user@devtarget.local`     |
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |
@@ -277,12 +285,12 @@ Set in `compose.yaml`:
 | `TANUKI_PROXY_PORT`  | `18080`                     | Proxy listen port                                        |
 | `TANUKI_PORT_START`  | `9000`                      | Starting port for domain assignments                     |
 | `TANUKI_UPSTREAM`    | `https://api.anthropic.com` | Upstream API URL                                         |
-| `TANUKI_FICTION_ORG` | `DEVTARGET`                 | Fiction org name for mappings                            |
+| `TANUKI_FICTION_ORG` | `DEVTARGET`                 | Fiction org name for mappings. At least 4 characters, no whitespace, and not a public suffix: the gate recognises tanuki's own output by this name, so a value like `com` would switch it off |
 | `TANUKI_DOMAINS`     | _(none)_                    | Comma-separated domains to pre-seed                      |
 | `TANUKI_IPS`         | _(none)_                    | Comma-separated IPs to pre-seed                          |
 | `TANUKI_SCOPE`       | _(none)_                    | Comma-separated in-scope domains (subdomains included). Empty means every detected domain is a target |
 | `TANUKI_RULES`       | _(none)_                    | Custom rules: `real\|fiction` pairs, semicolon-separated |
-| `TANUKI_IGNORE`      | _(none)_                    | Comma-separated domains never treated as targets (subdomains included). Always ignored: `anthropic.com`, `claude.com`, `claude.ai`, `json-schema.org`, the developer-platform domains Claude Code surfaces (`github.com`, `githubusercontent.com`, `google.com`, `googleapis.com`), and the operator's own email domain from Claude Code's account context. If one of these is your real target, `./tanuki add <domain>` maps it explicitly |
+| `TANUKI_IGNORE`      | _(none)_                    | Comma-separated domains never treated as targets (subdomains included). Always ignored: `anthropic.com`, `claude.com`, `claude.ai`, `json-schema.org`, the developer-platform domains Claude Code surfaces (`github.com`, `githubusercontent.com`, `google.com`, `googleapis.com`), and the operator's own email domain, read from Claude Code's account context in the system prompt and in your own messages (never from tool output or from the model's replies, so a page cannot forge one to exempt its own domain). If one of these is your real target, `./tanuki add <domain>` maps it explicitly |
 | `TANUKI_UID` / `TANUKI_GID` | `1000`               | Owner for a `.claude/` directory Docker had to create; an existing one keeps its owner |
 | `TANUKI_DEBUG`       | _(none)_                    | Set to any non-empty value to enable debug logging       |
 | `TANUKI_ON_LEAK`     | `refuse`                    | `refuse` or `warn` when a real value survives the rewrite |
@@ -304,7 +312,8 @@ Set in `compose.yaml`:
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug that drops a *recognised* value is caught. The re-scan sees what detection sees, so it cannot catch a value neither of them recognises, and it skips what is never rewritten: base64 image and document data, and signed thinking blocks. The limitations below are therefore the ones that matter.
-- **A bare token needs a common TLD.** Auto-detection reads a hostname on any real (ICANN) TLD where the surroundings say it is one: after `://` or `@`, or with a path or port right after it (`portal.acme.in/login`, `ops@acme.pl`, `acme.app:8443`). A token standing on its own is held to a curated list of ~70 common TLDs instead, because attribute access in code spells a real TLD often enough (`item.data.id`, `logger.info`, `req.app`) that taking those as domains polluted the table. So a bare mention of a target on an unusual TLD, with no URL, `@`, path or port around it, is still missed; add it with `./tanuki add`.
+- **Words code is written with are not treated as hostnames.** `.net`, `.io`, `.at`, `.network`, `.global` and `.online` are real TLDs, so `using System.Net;`, `self.network` and `buffer.at(i)` are hostnames by shape alone. A bare token whose registrable name is an everyday word (`self`, `system`, `user`, `config`, `template`, …) is left alone, and package registries and documentation hosts (`golang.org`, `pypi.org`, `npmjs.com`, `docs.rs`, `stackoverflow.com`, the RFC 2606 `example.*` names) are ignored outright. If one of these is your real target, `./tanuki add <domain>` maps it explicitly.
+- **A two-label bare token needs a common TLD, and a weakly detected one gets no org name.** Auto-detection reads a hostname on any real (ICANN) TLD where the surroundings say it is one — after `://` or `@`, or with a path right after it (`portal.acme.in/login`, `ops@acme.pl`, `acme.in:8443/admin`) — and also when a bare token has three or more labels (`api.target.in`, which is what subdomain enumeration output looks like). A two-label token standing on its own is held to a curated list of ~70 common TLDs, because attribute access and file references spell a real TLD often enough (`item.data.id`, `README.md:3`, `src/main.rs:118` — `.id`, `.md` and `.rs` are all real) that taking those as domains polluted the table. A domain recognised only by its context earns no org, email, path or cloud mapping, since an org rule rewrites a bare word everywhere. A bare two-label mention on an unusual TLD is still missed; add it with `./tanuki add`.
 - **Ignored domains need an explicit `add` to become targets.** `github.com`, `google.com`, and your own email domain are skipped by auto-detection so Claude Code's own git remotes, connectors, and account context don't pollute the table. The trade-off is that auto-detection alone will not map one of these, so on the rare engagement that targets GitHub or Google you must `./tanuki add github.com` first; the residual check also skips ignored domains, so it will not catch the omission for you.
 - **Thinking stays in fiction.** Thinking blocks are signed by the API, so they are passed through unchanged in both directions. Thinking shown in Claude Code reads in fiction terms.
 - **Streamed text is held back briefly.** A fiction value can be streamed a few characters per event, so the proxy holds back the end of a text or tool-input block while it could still be the start of one, and sends it once the next event settles it. Display can lag by a few characters; the full value always arrives reversed.
