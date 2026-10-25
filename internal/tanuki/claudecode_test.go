@@ -347,3 +347,36 @@ func TestToolInputDeltaStaysValidJSON(t *testing.T) {
 		t.Errorf("file_path = %q, want %q", args["file_path"], realPath)
 	}
 }
+
+// TestPrefilledBlockTextIsReversed: a block can open with text already in it,
+// and only the deltas after it were held back, so a fiction value straddling
+// the two was never reassembled and the operator read the fiction.
+func TestPrefilledBlockTextIsReversed(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+
+	stream := "event: content_block_start\n" +
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"connect to local"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"host:9000 now"}}` + "\n\n" +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n"
+
+	rec := httptest.NewRecorder()
+	rw, rwJSON := reverseRewriters(engDir)
+	streamSSEWithRewrite(rec, strings.NewReader(stream), rw, rwJSON)
+
+	// The client joins the block's own text with the deltas that follow, so
+	// the settled part stays in the start event and the value completes in the
+	// delta; readSSE only accumulates deltas, so check both directly.
+	out := rec.Body.String()
+	if !strings.Contains(out, `"text":"connect to "`) {
+		t.Errorf("start event did not keep the settled text: %s", out)
+	}
+
+	if got := readSSE(t, out).blocks[0]; got != testBaseDomain+" now" {
+		t.Errorf("delta text = %q, want the reversed target", got)
+	}
+
+	if strings.Contains(out, testFictionBase) {
+		t.Errorf("fiction survived in the stream: %s", out)
+	}
+}

@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/publicsuffix"
 )
@@ -403,21 +405,20 @@ func mappingBound(typ string) boundKind {
 // "tanuki add" and an in-scope entry both bypass this: the operator saying a
 // domain is a target outranks the guess.
 var reservedOrgNames = map[string]bool{
-	"self": true, "this": true, "super": true, "system": true, "user": true,
-	"users": true, "admin": true, "data": true, "config": true, "options": true,
-	"option": true, "buffer": true, "template": true, "example": true,
-	"socket": true, "server": true, "client": true, "request": true,
-	"response": true, "session": true, "context": true, "object": true,
-	"module": true, "package": true, "import": true, "export": true,
-	"default": true, "value": true, "result": true, "error": true,
-	"string": true, "number": true, "index": true, "item": true, "items": true,
-	"name": true, "type": true, "class": true, "props": true, "state": true,
-	"store": true, "cache": true, "queue": true, "event": true, "hello": true,
-	"world": true, "test": true, "tests": true, "spec": true, "build": true,
-	"main": true, "app": true, "api": true, "web": true, "src": true,
-	"lib": true, "docs": true, "doc": true, "file": true, "files": true,
-	"path": true, "node": true, "core": true, "base": true, "util": true,
-	"utils": true, "common": true, "shared": true, "local": true, "global": true,
+	// Receivers, scopes and language keywords.
+	"self": true, "this": true, "super": true, "window": true, "global": true,
+	"module": true, "exports": true, "package": true, "namespace": true,
+	// Objects a program names constantly.
+	"console": true, "process": true, "buffer": true, "socket": true,
+	"request": true, "response": true, "session": true, "context": true,
+	"options": true, "option": true, "config": true, "settings": true,
+	"params": true, "args": true, "props": true, "state": true, "system": true, "user": true, "users": true, "admin": true, "client": true,
+	"server": true, "object": true, "instance": true, "template": true,
+	"metadata": true, "labels": true, "trace": true, "span": true,
+	"stack": true, "chars": true, "model": true, "schema": true,
+	"result": true, "error": true, "errors": true, "event": true, "events": true,
+	"test": true, "tests": true, "spec": true, "mock": true, "fixture": true,
+	"util": true, "utils": true, "helper": true, "helpers": true,
 }
 
 // worthAnOrgRule reports whether a detected domain's registrable name is
@@ -719,7 +720,11 @@ func addCustomRule(engDir, realVal, fiction string) (bool, error) {
 		return false, nil
 	}
 
-	return true, addMapping(engDir, mapCustom, realVal, fiction)
+	if err := addMapping(engDir, mapCustom, realVal, fiction); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 var mappingTypes = map[string]bool{
@@ -763,15 +768,7 @@ func rewritesIntoItself(m mappingEntry) bool {
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
-	m := mappingEntry{Type: typ, Real: realVal, Fiction: fiction}
-	if err := validateMapping(m); err != nil {
-		return err
-	}
-
-	return appendToFile(
-		filepath.Join(engDir, "mappings.conf"),
-		fmt.Sprintf("%s|%s|%s", typ, realVal, fiction),
-	)
+	return appendMappings(engDir, []mappingEntry{{Type: typ, Real: realVal, Fiction: fiction}})
 }
 
 func nextCounter(engDir, filename, defaultVal string) (int, error) {
@@ -870,7 +867,7 @@ func derivedMappingEntries(baseDomain, orgName, fictionOrg string) []mappingEntr
 	return []mappingEntry{
 		{mapOrg, org, fictionOrg},
 		{mapEmail, "@" + baseDomain, "@" + fictionLower + ".local"},
-		{mapPath, "/" + org + "/", "/dev/" + fictionLower + "/"},
+		{mapPath, "/" + org + "/", "/" + fictionLower + "/"},
 		{mapCloud, "s3://" + org, "file:///tmp/" + fictionLower},
 	}
 }
@@ -1066,18 +1063,30 @@ func addHostOnlyDomain(engDir, domain string) error {
 	return addDomainMappings(engDir, domain, "", false)
 }
 
+// registrableName returns the label a domain's org, path and cloud fictions
+// are built from, refusing anything that is not a hostname. A bare word used
+// to produce a full set of mappings, so "tanuki add acme.com extra" told the
+// operator two targets were protected when "extra" was not one.
+func registrableName(domain string) (string, error) {
+	org := extractOrgName(domain)
+	if org == "" || !strings.Contains(domain, ".") || !domainRegex.MatchString(domain) {
+		return "", fmt.Errorf("not a domain: %q", domain)
+	}
+
+	return org, nil
+}
+
 func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 	// Lowercase so the table has no "Amazon.com"/"amazon.com" duplicates.
 	domain = strings.ToLower(strings.TrimRight(domain, "."))
 
-	orgName := extractOrgName(domain)
-	if orgName == "" {
-		return fmt.Errorf("invalid domain: %s", domain)
+	orgName, err := registrableName(domain)
+	if err != nil {
+		return err
 	}
 
 	baseFiction := resolveFictionOrg(engDir, fictionOrg)
 	baseDomain := extractBaseDomain(domain)
-	mappingsPath := filepath.Join(engDir, "mappings.conf")
 
 	unlock, err := lockAllocation(engDir)
 	if err != nil {
@@ -1132,7 +1141,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 		entries = append(entries, hostEntry(domain, port))
 	}
 
-	return appendMappings(mappingsPath, entries)
+	return appendMappings(engDir, entries)
 }
 
 // appendMappings validates every entry before writing any of them, so a value
@@ -1140,7 +1149,7 @@ func addDomainMappings(engDir, domain, fictionOrg string, derived bool) error {
 // addDomainMappings built its lines by hand and wrote them straight out, which
 // is how "--fiction-org ACME-CORP" (a fiction containing its own real value)
 // and a fiction org holding a newline both got in.
-func appendMappings(path string, entries []mappingEntry) error {
+func appendMappings(engDir string, entries []mappingEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -1155,7 +1164,125 @@ func appendMappings(path string, entries []mappingEntry) error {
 		lines = append(lines, fmt.Sprintf("%s|%s|%s", m.Type, m.Real, m.Fiction))
 	}
 
-	return appendToFile(path, strings.Join(lines, "\n"))
+	if err := checkTableConflicts(loadMappings(engDir), entries); err != nil {
+		return err
+	}
+
+	return appendToFile(filepath.Join(engDir, "mappings.conf"), strings.Join(lines, "\n"))
+}
+
+// rewritePass is the order the rewriter applies a mapping in: the automaton
+// first, org rules after it. A value the automaton introduces is still seen by
+// the org pass, so it is not a conflict; one introduced after its own pass has
+// run survives into the body.
+func rewritePass(typ string) int {
+	if typ == mapOrg {
+		return 1
+	}
+
+	return 0
+}
+
+// checkTableConflicts refuses an addition that would leave a mapped value in
+// the rewritten body, which makes the gate refuse every body naming it -- for
+// the rest of the engagement, since Claude Code resends history.
+//
+// Only a value no later pass will clean up counts. Modelling that matters:
+// without it, "tanuki add widgetco.com" was refused because an unrelated
+// custom rule's fiction said "WidgetCo", which the org pass rewrites anyway.
+//
+// The error names no value. It reaches the client, which folds it into the
+// next prompt, and a bare org name is not domain-shaped so nothing downstream
+// would catch it.
+func checkTableConflicts(existing, added []mappingEntry) error {
+	all := slices.Concat(existing, added)
+
+	for _, m := range added {
+		if found := residualTargets(nil, m.Fiction); len(found) > 0 {
+			logger.Warn("refusing a fiction the leak check would flag",
+				"type", m.Type, "fiction", m.Fiction, "looks_like", found)
+
+			return fmt.Errorf("the fiction for this %s mapping looks like a real target; "+
+				"the gate would refuse every body naming it (see the tanuki log)", m.Type)
+		}
+	}
+
+	// Only org and custom values are what the gate scans a rewritten body for
+	// (see survivors), so only an addition of one can create this conflict.
+	// Skipping otherwise keeps the auto-map path off an O(table) check it can
+	// run thousands of times in one body.
+	if !slices.ContainsFunc(added, func(m mappingEntry) bool {
+		return m.Type == mapOrg || m.Type == mapCustom
+	}) {
+		return nil
+	}
+
+	machine, owners := newConflictMachine(all)
+	if machine == nil {
+		return nil
+	}
+
+	for _, m := range all {
+		isNew := slices.Contains(added, m)
+
+		for _, hit := range machine.find(m.Fiction) {
+			held := owners[hit.index]
+
+			sameValue := strings.EqualFold(held.Real, m.Real)
+			if sameValue || rewritePass(held.Type) > rewritePass(m.Type) {
+				continue
+			}
+
+			if !isNew && !slices.ContainsFunc(added, func(a mappingEntry) bool {
+				return strings.EqualFold(a.Real, held.Real)
+			}) {
+				continue
+			}
+
+			logger.Warn("refusing a mapping whose fiction holds another mapped value",
+				"real", m.Real, "fiction", m.Fiction, "holds", held.Real)
+
+			return fmt.Errorf("this %s mapping's fiction holds another mapped value; "+
+				"the gate would refuse every body naming it (see the tanuki log)", m.Type)
+		}
+	}
+
+	return nil
+}
+
+// newConflictMachine matches every mapped real value with the bound its own
+// mapping uses, and reports which mapping each pattern came from.
+func newConflictMachine(all []mappingEntry) (*acMachine, []mappingEntry) {
+	var (
+		patterns []string
+		bounds   []boundKind
+		owners   []mappingEntry
+	)
+
+	for _, m := range all {
+		// The gate scans a rewritten body for these two only.
+		if m.Type != mapOrg && m.Type != mapCustom || m.Real == "" {
+			continue
+		}
+
+		bound := mappingBound(m.Type)
+		if m.Type == mapOrg {
+			bound = boundWord
+			if len(m.Real) >= minOrgPartLen {
+				bound = boundWordPart
+			}
+		}
+
+		patterns = append(patterns, m.Real)
+		bounds = append(bounds, bound)
+		owners = append(owners, m)
+	}
+
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	return newACMachine(patterns, patterns, bounds), owners
 }
 
 func addIPMapping(engDir, ip string) error {
@@ -1220,8 +1347,41 @@ func isPrivateIP(ip string) bool {
 		return true
 	}
 
-	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
-		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast()
+	if parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified() ||
+		parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() ||
+		parsed.IsMulticast() || parsed.IsInterfaceLocalMulticast() {
+		return true
+	}
+
+	return isSpecialPurposeV4(parsed)
+}
+
+// cgnatRange is RFC 6598 shared address space, which is carrier equipment
+// rather than a target.
+var cgnatRange = net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+// isSpecialPurposeV4 rejects addresses that are never a host anyone tests: the
+// all-ones broadcast, a netmask, and shared address space. A netmask next to
+// an address in ifconfig output was being mapped, so the subnet the model
+// needs to reason about came back as 127.0.0.4.
+func isSpecialPurposeV4(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+
+	if v4.Equal(net.IPv4bcast) || cgnatRange.Contains(v4) || v4[0] >= 240 {
+		return true
+	}
+
+	// A contiguous run of high bits then zeros is a mask, not an address.
+	return isContiguousMask(v4)
+}
+
+func isContiguousMask(v4 net.IP) bool {
+	ones, bits := net.IPMask(v4).Size()
+
+	return bits == 32 && ones > 0 && ones < 32
 }
 
 // accountRegexes find AWS account IDs where the context says a twelve-digit
@@ -1373,7 +1533,7 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 		}
 
 		ip, n := longestValidIPPrefix(text[start:to])
-		if n == 0 || addressContinuesAt(text, start+n) {
+		if n == 0 || addressContinuesAt(text, start+n) || isHardwareAddress(text[start:start+n]) {
 			continue
 		}
 
@@ -1383,21 +1543,82 @@ func ipAt(text string, from, to int) (ipMatch, bool) {
 	return ipMatch{}, false
 }
 
-// versionLead is how far back precededByVersion looks for the word.
-const versionLead = 24
-
-// precededByVersion reports whether the token at i is introduced by the word
-// "version". A four-part version string is shaped exactly like an address --
-// "<AssemblyVersion>1.0.0.0</…>", `"version": "4.17.21.1"` -- and nothing in
-// the number itself tells them apart. Where the text says which it is, take
-// its word; "upgraded from 1.2.3.4" still reads as an address.
+// precededByVersion reports whether the number at i is introduced by the word
+// "version". A four-part version string is shaped exactly like an address, and
+// nothing in the number tells them apart, so where the text says which it is,
+// take its word.
+//
+// The word has to end the preceding token, not merely be a suffix of it:
+// testing for a trailing "ver" swallowed "Server: 203.0.113.5",
+// "resolver 203.0.113.9" and "failover 203.0.113.7", which is the commonest
+// shape in nmap, curl and dig output. Compounds ending in "version"
+// (AssemblyVersion, FileVersion) still count.
 func precededByVersion(text string, i int) bool {
-	from := max(0, i-versionLead)
+	end := i
+	for end > 0 && strings.ContainsRune(" \t\"'>=:.,/(-", rune(text[end-1])) {
+		end--
+	}
 
-	lead := strings.ToLower(text[from:i])
-	lead = strings.TrimLeft(strings.TrimRight(lead, " \t\"'>=:"), " \t")
+	start := end
+	for start > 0 {
+		r, size := utf8.DecodeLastRuneInString(text[:start])
+		if !unicode.IsLetter(r) {
+			break
+		}
 
-	return strings.HasSuffix(lead, "version") || strings.HasSuffix(lead, "ver")
+		start -= size
+	}
+
+	word := strings.ToLower(text[start:end])
+
+	return notAnAddressWords[word] || strings.HasSuffix(word, "version")
+}
+
+// notAnAddressWords introduce a dotted quad that is not a host: a version, or
+// a piece of subnet configuration. "broadcast 192.0.2.255" and
+// "netmask 255.255.255.0" are the shape ifconfig and ip addr print, and
+// mapping them destroys the subnet the model has to reason about.
+var notAnAddressWords = map[string]bool{
+	"ver": true, "v": true, "release": true, "kernel": true, "build": true,
+	"assembly": true, "revision": true, "rev": true, "версия": true,
+	"netmask": true, "mask": true, "genmask": true, "broadcast": true,
+	"bcast": true,
+}
+
+// isHardwareAddress reports whether raw is a MAC or Fibre Channel WWN rather
+// than an address. Eight groups of exactly two hex digits parse as a valid
+// IPv6, so storage and network inventory output became targets. A real address
+// written that way is indistinguishable, but it is not how one is written: a
+// run with no "::" and every group padded to two digits is hardware.
+func isHardwareAddress(raw string) bool {
+	if strings.Contains(raw, "::") || strings.Contains(raw, ".") {
+		return false
+	}
+
+	groups := strings.Split(raw, ":")
+	if len(groups) < 6 {
+		return false
+	}
+
+	for _, g := range groups {
+		if len(g) != 2 {
+			return false
+		}
+	}
+
+	return true
+}
+
+// startsMidWord reports whether i falls inside a word, which the leading \b
+// used to rule out for ASCII only.
+func startsMidWord(text string, i int) bool {
+	if i == 0 {
+		return false
+	}
+
+	r, _ := utf8.DecodeLastRuneInString(text[:i])
+
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func isAlnumByte(b byte) bool {
@@ -1472,7 +1693,14 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 	return b.String()
 }
 
-var domainRegex = regexp.MustCompile(`\b([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b`)
+// domainRegex matches a hostname. Labels take Unicode letters so an
+// internationalised name is matched whole: an ASCII-only class entered
+// "münchen.de" after the non-ASCII rune and detected "nchen.de", which mapped
+// the wrong name and left "mü" in the rewritten text.
+//
+// There is no leading \b: Go's is ASCII-only, so it never fires before a label
+// like "例え". startsMidWord does that job for every script.
+var domainRegex = regexp.MustCompile(`([\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+\p{L}{2,}\b`)
 
 func hasCommonTLD(domain string) bool {
 	parts := strings.Split(domain, ".")
@@ -1498,7 +1726,16 @@ func isRealDomain(domain string) bool {
 // uncommon TLD is far more often code than a domain, so it needs one of these
 // markers.
 func hostContext(text string, start, end int) bool {
-	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
+	pre := text[:start]
+
+	if strings.HasSuffix(pre, "://") {
+		return true
+	}
+
+	// "user@host" is an address; a bare "@host" at the start of a line is a
+	// Ruby instance variable or a decorator, and "@order.customer.email" was
+	// being mapped as a hostname.
+	if strings.HasSuffix(pre, "@") && len(pre) > 1 && isAlnumByte(pre[len(pre)-2]) {
 		return true
 	}
 
@@ -1508,9 +1745,13 @@ func hostContext(text string, start, end int) bool {
 
 	switch text[end] {
 	case '/':
-		// A trailing slash is the weakest of the markers: "gopkg.in/yaml.v3",
-		// "./scripts/build.sh/" and "docs.rs/serde" are module and file paths,
-		// not hosts. Two labels need a scheme or an "@" instead.
+		// The weakest marker: "gopkg.in/yaml.v3" and "docs.rs/serde" are module
+		// paths, so two labels need a scheme or an "@" instead. A digit after
+		// the slash is division -- "obj.data.app/2" -- not a path.
+		if end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9' {
+			return false
+		}
+
 		return strings.Count(text[start:end], ".") >= 2
 	case ':':
 		return portThenPath(text, end+1)
@@ -1537,16 +1778,65 @@ func portThenPath(text string, i int) bool {
 	return digits > 0 && digits <= 5 && i+digits < len(text) && text[i+digits] == '/'
 }
 
-// isDetectableHost reports whether the token at [start,end) is a hostname
-// rather than something code is made of.
+// hostInMatch returns the hostname inside a regex match, which can be shorter
+// than the match itself. Prose that drops the space after a full stop glues
+// the next sentence on -- "Our scope is target.com.We enumerated 42 hosts" --
+// and the greedy pattern swallows it, so the whole token failed every test and
+// the target was missed by detection and by the gate alike.
 //
-// Where the surroundings say it is a host, any real TLD counts. A bare token
-// needs a common TLD and a registrable name that is not an everyday word:
-// ".net", ".io", ".at", ".network", ".global" and ".online" are all real TLDs,
-// so "using System.Net;", "self.network" and "buffer.at(i)" are hostnames by
-// shape alone, and mapping them rewrote the source the model was reading.
+// Trailing labels are dropped one at a time and each prefix retried; a shorter
+// prefix has to carry a curated TLD, so "java.net.Socket" does not hand back
+// "java.net".
+func hostInMatch(text string, from, to int) string {
+	full := strings.ToLower(text[from:to])
+	if isDetectableHost(text, full, from, to) {
+		return full
+	}
+
+	for end := strings.LastIndexByte(full, '.') + from; end > from; end = strings.LastIndexByte(text[from:end], '.') + from {
+		candidate := strings.ToLower(text[from:end])
+		if hasCommonTLD(candidate) && isDetectableHost(text, candidate, from, end) {
+			return candidate
+		}
+	}
+
+	return ""
+}
+
+// codeKeywords introduce a module path, not a host.
+var codeKeywords = []string{"import ", "from ", "using ", "require ", "package ", "namespace ", "extern "}
+
+// precededByCodeKeyword reports whether the token at start follows a keyword
+// that introduces a module path: "from scipy.io import loadmat" names a Python
+// module, not a site on Cocos Islands.
+func precededByCodeKeyword(text string, start int) bool {
+	const lead = 16
+
+	before := strings.ToLower(text[max(0, start-lead):start])
+
+	return slices.ContainsFunc(codeKeywords, func(kw string) bool {
+		return strings.HasSuffix(before, kw)
+	})
+}
+
+// isDetectableHost reports whether the token at [start,end) is a hostname.
+//
+// A bare token needs a TLD from the curated list. Any other real TLD needs the
+// surroundings to say it is a host: after "://" or "@", or with a path right
+// after it. Accepting a bare token on any ICANN suffix because it had three or
+// more labels was tried and withdrawn -- attribute chains reach real TLDs
+// constantly ("module.exports.app", "self.model.fit",
+// "spec.template.metadata.labels.app"), and no reading of the surrounding line
+// separated them from enumeration output without either mangling source or
+// missing the output it was added for. A target on an uncommon TLD needs
+// "tanuki add" or a scope entry; "tanuki verify" finds one in a draft report.
+//
+// The registrable name is deliberately not consulted here. It decides whether
+// a target earns an org rule, which rewrites a bare word everywhere, and
+// scope.isTarget makes that call. Letting it veto the host decision hid
+// "store.com" and "core.ac.uk" from detection and from the gate.
 func isDetectableHost(text, domain string, start, end int) bool {
-	if !worthAnOrgRule(extractOrgName(domain)) {
+	if precededByCodeKeyword(text, start) {
 		return false
 	}
 
@@ -1554,39 +1844,7 @@ func isDetectableHost(text, domain string, start, end int) bool {
 		return hasCommonTLD(domain) || isRealDomain(domain)
 	}
 
-	return hasCommonTLD(domain) || deepEnoughToBeAHost(domain)
-}
-
-// deepEnoughToBeAHost accepts a bare token on an uncommon but real TLD when it
-// has three or more labels.
-//
-// Enumeration output is where targets arrive -- subfinder, nmap, httpx and
-// report tables list bare hostnames with no scheme, "@" or path around them --
-// and the curated list covers 72 of some 1500 real TLDs, so "api.target.in"
-// was invisible to detection and to the gate alike. Three labels is what
-// separates those from the two-label attribute access the curated list exists
-// to filter.
-//
-// A TLD that is also a common file extension is refused here: ".sh", ".py",
-// ".rs", ".md", ".zip" and ".mov" are all real, and "scripts/build.prod.sh" is
-// not a hostname.
-func deepEnoughToBeAHost(domain string) bool {
-	labels := strings.Split(domain, ".")
-	if len(labels) < 3 {
-		return false
-	}
-
-	if fileExtensionTLDs[labels[len(labels)-1]] {
-		return false
-	}
-
-	return isRealDomain(domain)
-}
-
-// fileExtensionTLDs are real TLDs that are far more often a file extension.
-var fileExtensionTLDs = map[string]bool{
-	"sh": true, "py": true, "rs": true, "md": true, "pl": true, "pm": true,
-	"so": true, "cc": true, "ml": true, "zip": true, "mov": true, "bat": true,
+	return hasCommonTLD(domain) && worthAnOrgRule(extractOrgName(domain))
 }
 
 // scanned is what scanTargets found in one string.
@@ -1609,15 +1867,17 @@ func scanTargets(text string) scanned {
 	seen := make(map[string]bool)
 
 	for _, loc := range domainRegex.FindAllStringIndex(text, -1) {
-		domain := strings.ToLower(text[loc[0]:loc[1]])
-		if seen[domain] {
+		if startsMidWord(text, loc[0]) {
 			continue
 		}
 
-		if isDetectableHost(text, domain, loc[0], loc[1]) {
-			seen[domain] = true
-			s.domains = append(s.domains, domain)
+		domain := hostInMatch(text, loc[0], loc[1])
+		if domain == "" || seen[domain] {
+			continue
 		}
+
+		seen[domain] = true
+		s.domains = append(s.domains, domain)
 	}
 
 	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {

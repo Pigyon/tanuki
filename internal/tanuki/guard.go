@@ -1,8 +1,6 @@
 package tanuki
 
 import (
-	"errors"
-	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -45,8 +43,15 @@ var builtinIgnored = []string{
 	// Package registries and documentation hosts: they appear in go.mod,
 	// package.json, imports and docs links on nearly every coding turn.
 	"golang.org", "go.dev", "gopkg.in", "pkg.go.dev",
-	"npmjs.com", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
+	"npmjs.com", "npmjs.org", "pypi.org", "crates.io", "docs.rs", "rubygems.org",
 	"stackoverflow.com", "mozilla.org", "w3.org", "readthedocs.io",
+	"nuget.org", "packagist.org", "maven.apache.org", "apache.org",
+	"nodejs.org", "python.org", "rust-lang.org", "helm.sh", "k8s.io",
+	"schemas.android.com", "oracle.com", "letsencrypt.org",
+	// Container registries and forges, which appear in every Dockerfile,
+	// compose file and clone URL.
+	"docker.io", "ghcr.io", "quay.io", "gcr.io", "registry.k8s.io",
+	"gitlab.com", "bitbucket.org",
 	// Reserved for documentation by RFC 2606; never a real target.
 	"example.com", "example.org", "example.net",
 }
@@ -178,35 +183,60 @@ func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, err
 	found := findNewTargets(engDir, texts, extraIgnored...)
 	sc := loadScope(engDir)
 
-	var err error
+	mapped := 0
 
 	for _, domain := range found.domains {
-		var addErr error
-
-		if sc.isTarget(domain) {
-			addErr = addDomain(engDir, domain, "")
-		} else {
-			addErr = addHostOnlyDomain(engDir, domain)
-		}
-
-		if addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
-		}
+		mapped += logMapFailure("domain", domain, mapOneDomain(engDir, sc, domain))
 	}
 
 	for _, ip := range found.ips {
-		if addErr := addIPMapping(engDir, ip); addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping IP %s: %w", ip, addErr))
-		}
+		mapped += logMapFailure("ip", ip, addIPMapping(engDir, ip))
 	}
 
 	for _, id := range found.accounts {
-		if addErr := addAccountMapping(engDir, id); addErr != nil {
-			err = errors.Join(err, fmt.Errorf("mapping account %s: %w", id, addErr))
-		}
+		mapped += logMapFailure("account", id, addAccountMapping(engDir, id))
 	}
 
-	return len(found.domains) + len(found.ips) + len(found.accounts), err
+	return mapped, nil
+}
+
+// logMapFailure records that one value could not be mapped and reports whether
+// it was, so one bad value cannot refuse the whole body.
+//
+// The error is logged, never returned: it names the value, and the refusal it
+// would cause is shown to the client, which folds the text into its next
+// prompt and sends the real value upstream that way. A value that truly is in
+// the body and unmapped is still caught by the gate, which reports counts.
+func logMapFailure(kind, value string, err error) int {
+	if err == nil {
+		return 1
+	}
+
+	logger.Warn("could not map a detected value", "kind", kind, "value", value, "error", err)
+
+	return 0
+}
+
+// mapOneDomain maps a detected domain, falling back to a hostname-only
+// mapping when the derived set conflicts with something already in the table.
+// A refusal here reaches anonymizeUpstreamBody and refuses the body, and since
+// Claude Code resends history that would refuse the conversation for good --
+// so the hostname, which is what actually hides the target, is worth keeping
+// even when the org name cannot be.
+func mapOneDomain(engDir string, sc scope, domain string) error {
+	if !sc.isTarget(domain) {
+		return addHostOnlyDomain(engDir, domain)
+	}
+
+	err := addDomain(engDir, domain, "")
+	if err == nil {
+		return nil
+	}
+
+	logger.Warn("mapping the target in full failed; mapping its hostname only",
+		"domain", domain, "error", err)
+
+	return addHostOnlyDomain(engDir, domain)
 }
 
 // residualTargets returns the real-looking values still present in text. It

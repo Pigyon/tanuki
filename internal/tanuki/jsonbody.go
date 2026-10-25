@@ -97,7 +97,7 @@ func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 				continue
 			}
 
-			if !opaqueKeys[k] {
+			if !opaqueKeys[k] && !keepAsIs(t, k) {
 				t[k] = rewriteJSONValue(val, fn, isToolUse && k == "input")
 			}
 		}
@@ -107,9 +107,28 @@ func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 		}
 	case string:
 		return fn(t)
+	case json.Number:
+		return rewriteJSONNumber(t, fn)
 	}
 
 	return v
+}
+
+// rewriteJSONNumber rewrites a number's text. The result goes back as a number
+// when it is still a valid JSON literal, and as a string otherwise: an account
+// fiction is zero-padded, which no number literal may be. Changing the type is
+// better than leaving a real value in place.
+func rewriteJSONNumber(n json.Number, fn func(string) string) any {
+	out := fn(n.String())
+	if out == n.String() {
+		return n
+	}
+
+	if json.Valid([]byte(out)) {
+		return json.Number(out)
+	}
+
+	return out
 }
 
 // rewriteToolArgs rewrites every key and value of a tool's arguments. It
@@ -166,6 +185,11 @@ func jsonStrings(v any) []string {
 			}
 		case string:
 			out = append(out, t)
+		case json.Number:
+			// decodeJSON keeps numbers exact, so a numeric target identifier
+			// (an AWS account, a tenant or ticket number) arrives as a Number
+			// and matched neither case: unscanned by the gate and unrewritten.
+			out = append(out, t.String())
 		}
 	}
 

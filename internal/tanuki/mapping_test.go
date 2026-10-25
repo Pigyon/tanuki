@@ -519,22 +519,32 @@ func TestRealTLDsDetectedInHostContext(t *testing.T) {
 	}
 }
 
-// TestBareEnumerationOutputIsDetected: enumeration output is where targets
-// arrive, and it lists bare hostnames with no scheme, "@" or path around them.
-// The curated list covers 72 of some 1500 real TLDs, so a target on any other
-// was invisible to detection and to the gate alike -- a silent leak.
-func TestBareEnumerationOutputIsDetected(t *testing.T) {
+// TestBareHostsNeedACommonTLDOrAMarker pins the trade-off this settled on.
+// Accepting a bare token on any ICANN suffix because it had three or more
+// labels was tried twice and withdrawn twice: attribute chains reach real TLDs
+// constantly, and no reading of the surrounding line told them apart from
+// enumeration output without either mangling source or missing the output it
+// was added for. A target on an uncommon TLD needs a marker, "tanuki add" or a
+// scope entry, and "tanuki verify" finds one in a draft report.
+func TestBareHostsNeedACommonTLDOrAMarker(t *testing.T) {
 	t.Parallel()
 
 	engDir := newTestEngagement(t)
 
-	for _, text := range []string{
-		"api.target.in", "www.target.in", "staging.target.app", "vpn.target.site",
-		"host api.target.in is up", "| api.target.in | 200 |",
-		"Nmap scan report for api.target.in (203.0.113.5)",
-	} {
+	withMarker := []string{
+		"https://api.target.in/login", "ops@target.pl", "api.target.in/health",
+		"target.in:8443/admin", "https://staging.target.app/",
+	}
+	for _, text := range withMarker {
 		if found := findNewDomains(text, engDir); len(found) == 0 {
 			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+
+	bare := []string{"api.target.in", "www.target.in", "staging.target.app"}
+	for _, text := range bare {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) = %v, want none on an uncommon TLD", text, found)
 		}
 	}
 }
@@ -971,6 +981,65 @@ func TestVersionStringsAreNotAddresses(t *testing.T) {
 
 	// Without that word it is read as an address, which is the safe default.
 	for _, text := range []string{"ping 203.0.113.5", "host 8.8.8.8", "upgraded to 1.2.3.5"} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestAddressAfterAWordEndingInVer: the version check tested for a trailing
+// "ver", so "Server: 203.0.113.5" counted as a version string. That is the
+// commonest shape in nmap, curl and dig output, and because the gate shares
+// the recogniser the address left with no refusal at all.
+func TestAddressAfterAWordEndingInVer(t *testing.T) {
+	t.Parallel()
+
+	found := []string{
+		"Server: 203.0.113.5", "the web server 203.0.113.5 responded",
+		"DNS resolver 203.0.113.9", "failover 203.0.113.7",
+		"Nameserver=203.0.113.14", "Driver 203.0.113.11",
+		`{"server": "203.0.113.5"}`, "Server: 2001:db8::1",
+	}
+	for _, text := range found {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+
+		if res := residualTargets(nil, text); len(res) != 1 {
+			t.Errorf("the gate missed the address in %q: %v", text, res)
+		}
+	}
+
+	// The word itself, and compounds ending in it, still suppress.
+	for _, text := range []string{
+		"<AssemblyVersion>1.0.0.0</AssemblyVersion>", `"version": "4.17.21.1"`,
+		"version=1.2.3.4", "ver 1.2.3.4",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+}
+
+// TestHardwareAddressesAreNotTargets: eight groups of two hex digits parse as
+// a valid IPv6, so Fibre Channel WWNs and 8-group MACs in storage and network
+// inventory output were mapped as targets.
+func TestHardwareAddressesAreNotTargets(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"wwn 20:00:00:25:b5:00:00:01 online", "WWN 50:06:01:60:bb:a0:1f:2e",
+		"mac 00:1a:2b:3c:4d:5e:00:11", "mac 00:1a:2b:3c:4d:5e",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 0 {
+			t.Errorf("targetsIn(%q) = %v, want none", text, ips)
+		}
+	}
+
+	// A real address in full form is still found.
+	for _, text := range []string{
+		"2001:db8:85a3:0000:0000:8a2e:0370:7334", "2001:db8::1", "::ffff:52.94.236.248",
+	} {
 		if ips := targetsIn(text).ips; len(ips) != 1 {
 			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
 		}

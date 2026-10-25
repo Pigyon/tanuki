@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,11 +56,24 @@ func runProxy() {
 		fatal(err.Error())
 	}
 
+	// Bind before writing any Claude Code config. configureHooks points this
+	// directory at the proxy, and a start that fails after that -- a port
+	// already in use, a second "compose up" -- left the redirect behind with
+	// nothing ever listening, which is the ECONNREFUSED state. fatal() exits
+	// past the cleanup at the end, so the only safe order is to fail first.
+	var lc net.ListenConfig
+
+	listener, err := lc.Listen(context.Background(), "tcp", "0.0.0.0:"+port)
+	if err != nil {
+		fatal("proxy listen failed: " + err.Error())
+	}
+
 	if err := configureHooks(); err != nil {
 		fatal(err.Error())
 	}
 
 	if err := generateClaudeMD(engDir); err != nil {
+		restoreClaudeCodeConfig()
 		fatal(err.Error())
 	}
 
@@ -92,7 +106,7 @@ func runProxy() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -101,7 +115,8 @@ func runProxy() {
 	case <-ctx.Done():
 		logger.Info("shutting down proxy")
 	case err := <-errCh:
-		fatal("proxy listen failed: " + err.Error())
+		restoreClaudeCodeConfig()
+		fatal("proxy failed: " + err.Error())
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -111,14 +126,24 @@ func runProxy() {
 		logger.Error("shutdown error", "error", err)
 	}
 
-	// configureHooks pointed Claude Code at this proxy on start; undo that now.
-	// Left behind, ANTHROPIC_BASE_URL sends the next session to a port nothing
-	// is listening on (ECONNREFUSED), and every tool call tries to docker exec
-	// a container that is gone. A restart re-applies it, so this is only ever
-	// in effect while the proxy is actually down.
+	restoreClaudeCodeConfig()
+}
+
+// restoreClaudeCodeConfig undoes what configureHooks and generateClaudeMD
+// wrote. Left behind, ANTHROPIC_BASE_URL sends the next session in this
+// directory to a port nothing is listening on (ECONNREFUSED) and every tool
+// call tries to docker exec a container that is gone, while the cover story
+// tells that session the project is called DEVTARGET. A restart re-applies
+// both, so they are in effect only while the proxy is.
+func restoreClaudeCodeConfig() {
 	settingsPath := filepath.Join(".claude", "settings.json")
 	if fileExists(settingsPath) {
 		removeTanukiSettings(settingsPath)
+	}
+
+	claudeMDPath := filepath.Join(".claude", "CLAUDE.md")
+	if fileExists(claudeMDPath) {
+		removeTanukiClaudeMD(claudeMDPath)
 	}
 }
 
@@ -181,6 +206,15 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isMessagesPath := isMessagesRequest(r.URL.Path)
 
+	if isMessagesPath {
+		if err := checkRequestEnvelope(r); err != nil {
+			logger.Warn("refusing to forward request", "path", r.URL.Path, "reason", err.Error())
+			writeAPIError(w, http.StatusBadRequest, "refused to forward request: "+err.Error())
+
+			return
+		}
+	}
+
 	if isMessagesPath && len(body) > 0 {
 		anonymized, err := anonymizeUpstreamBody(body)
 		if err != nil {
@@ -239,6 +273,41 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		forwardWithRewrite(w, resp, responseRewriter())
 	}
+}
+
+// checkRequestEnvelope refuses a prompt-bearing request whose envelope the
+// rewriter never reaches: a compressed body, which it cannot read and would
+// forward whole, and a real target in the query string or a header, neither of
+// which is part of the body the gate scans.
+//
+// Refusing rather than rewriting is deliberate. Claude Code compresses no
+// request and puts no target in a header, so either means something else is
+// driving the proxy and the body's guarantees do not hold.
+func checkRequestEnvelope(r *http.Request) error {
+	if enc := r.Header.Get("Content-Encoding"); enc != "" && !strings.EqualFold(enc, "identity") {
+		return fmt.Errorf("request body is %s-encoded, which cannot be anonymized", enc)
+	}
+
+	if found := residualTargets(nil, r.URL.RawQuery); len(found) > 0 {
+		logger.Warn("real values in the request query", "count", len(found), "values", found)
+
+		return fmt.Errorf("%d real value(s) in the request query; see the tanuki log", len(found))
+	}
+
+	for name, values := range r.Header {
+		if hopByHopHeaders[http.CanonicalHeaderKey(name)] {
+			continue
+		}
+
+		if found := residualTargets(nil, values...); len(found) > 0 {
+			logger.Warn("real values in a request header",
+				"header", name, "count", len(found), "values", found)
+
+			return fmt.Errorf("%d real value(s) in the %s header; see the tanuki log", len(found), name)
+		}
+	}
+
+	return nil
 }
 
 // isMessagesRequest reports whether path addresses the Messages API, the
@@ -312,6 +381,10 @@ func newSSESink(w http.ResponseWriter, rw, rwJSON *rewriter) *sseSink {
 func (s *sseSink) write(event string) {
 	if doc := s.eventData(event); doc != nil {
 		switch doc[typeKey] {
+		case "content_block_start":
+			if s.holdStart(doc) {
+				return
+			}
 		case "content_block_delta":
 			if s.holdDelta(doc) {
 				return
@@ -344,6 +417,43 @@ func (s *sseSink) eventData(event string) map[string]any {
 	}
 
 	return nil
+}
+
+// holdStart does for a block's prefilled text what holdDelta does for the
+// deltas after it. A block can open with text already in it, and a fiction
+// value straddling that text and the first delta was never reassembled: the
+// operator read "localhost:9000" where the target should have been.
+func holdStartField(block map[string]any) (string, bool) {
+	text, ok := block["text"].(string)
+
+	return text, ok && text != ""
+}
+
+func (s *sseSink) holdStart(doc map[string]any) bool {
+	block, _ := doc["content_block"].(map[string]any)
+	if block == nil {
+		return false
+	}
+
+	text, ok := holdStartField(block)
+	if !ok {
+		return false
+	}
+
+	send, hold := s.rw.splitHeld(text)
+	block["text"] = s.rw.rewrite(send)
+
+	key := fmt.Sprint(doc["index"])
+	s.held[key] = &heldDelta{index: doc["index"], kind: "text_delta", text: hold}
+
+	data, err := encodeJSON(doc)
+	if err != nil {
+		return false
+	}
+
+	s.send("event: content_block_start\ndata: " + string(data) + "\n\n")
+
+	return true
 }
 
 // holdDelta sends the part of a text delta that is settled, keeps the tail
