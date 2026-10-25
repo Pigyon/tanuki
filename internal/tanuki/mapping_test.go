@@ -256,6 +256,52 @@ func TestUnmappedSubdomainLabelDoesNotLeak(t *testing.T) {
 
 // TestExplicitSubdomainBeatsWildcard ensures the wildcard does not swallow a
 // subdomain that has its own mapping, which would break round-tripping.
+// TestTargetWithAFileExtensionDoesNotLeak: a hostname written with a file
+// extension after it ("bounty.acme.com.txt") matched no wildcard and was
+// refused by the exact pass, so only the org rule fired. That rewrote the
+// registrable name and left the subdomain label upstream in clear.
+func TestTargetWithAFileExtensionDoesNotLeak(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain, testSubDomain)
+	r2f, _ := rewriters(t, engDir)
+
+	leaky := []string{
+		"cat " + testSubDomain + ".txt",
+		"ls internal-admin." + testBaseDomain + ".har",
+		"scp report." + testBaseDomain + ".pcap host:/tmp",
+		"open " + testBaseDomain + ".log",
+	}
+
+	for _, in := range leaky {
+		got := r2f.rewrite(in)
+
+		for _, real := range []string{testOrgName, "bounty", "internal-admin"} {
+			if strings.Contains(strings.ToLower(got), real) {
+				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, real)
+			}
+		}
+	}
+
+	// The extension itself stays, and a genuinely different host is untouched.
+	if got := r2f.rewrite(testSubDomain + ".txt"); !strings.HasSuffix(got, ".txt") {
+		t.Errorf("extension was swallowed: %q", got)
+	}
+
+	// A genuinely different host keeps its shape: the org rule still replaces
+	// the bare label, but no hostname mapping is applied across it.
+	for _, other := range []string{"amazon.community", "amazon.com.br"} {
+		got := r2f.rewrite(other)
+		if !strings.HasSuffix(got, strings.TrimPrefix(other, testOrgName)) {
+			t.Errorf("unrelated host %q lost its shape: %q", other, got)
+		}
+
+		if strings.Contains(got, testFictionBase) || strings.Contains(got, testFictionWildcard) {
+			t.Errorf("hostname mapping fired across %q: %q", other, got)
+		}
+	}
+}
+
 func TestExplicitSubdomainBeatsWildcard(t *testing.T) {
 	t.Parallel()
 
@@ -402,6 +448,51 @@ func TestTLDDetectionAvoidsCodePatterns(t *testing.T) {
 // TestFindNewDomainsDetectsApexDomains is a regression test: a prompt
 // mentioning only a bare apex domain used to produce no mapping at all,
 // so the real domain was sent to the upstream API unrewritten.
+// TestRealTLDsDetectedInHostContext: the curated TLD list left real domains
+// on uncommon TLDs (.in, .it, .pl, .app) undetected, so they went upstream in
+// clear. Where the surroundings say the token is a host, any ICANN suffix is
+// enough.
+func TestRealTLDsDetectedInHostContext(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	hosts := []string{
+		"https://portal.acme.in/login",
+		"see shop.acme.it/cart",
+		"mail admin@acme.pl today",
+		"connect to acme.app:8443",
+		"//cdn.acme.pizza/asset.js",
+	}
+
+	for _, text := range hosts {
+		if found := findNewDomains(text, engDir); len(found) == 0 {
+			t.Errorf("findNewDomains(%q) found nothing", text)
+		}
+	}
+}
+
+// TestUncommonTLDsStayFilteredAsBareTokens: an attribute access spells a real
+// TLD often enough (.id, .in, .it, .so) that a bare token on one must not be
+// taken for a domain, or the org rule then rewrites that word everywhere.
+func TestUncommonTLDsStayFilteredAsBareTokens(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	code := []string{
+		"item.data.id", "req.session.id", "for x in list.in",
+		"self.config.ini", "value.as", "promise.so",
+		"readme.md", "config.yaml", "main.go", "styles.css",
+	}
+
+	for _, text := range code {
+		if found := findNewDomains(text, engDir); len(found) > 0 {
+			t.Errorf("findNewDomains(%q) detected %v", text, found)
+		}
+	}
+}
+
 func TestFindNewDomainsDetectsApexDomains(t *testing.T) {
 	t.Parallel()
 
@@ -589,6 +680,7 @@ func TestImportedCountersAvoidCollision(t *testing.T) {
 		"domain|amazon.com|localhost:9005",
 		"wildcard|*.amazon.com|localhost:9006",
 		"ip|52.94.236.248|127.0.0.7",
+		"account|123456789012|000000000004",
 	}, "\n") + "\n"
 
 	writes := map[string]string{
@@ -613,6 +705,10 @@ func TestImportedCountersAvoidCollision(t *testing.T) {
 
 	if got := readFileContent(filepath.Join(engDir, "ip_counter")); got != "7" {
 		t.Errorf("ip_counter = %q, want 7", got)
+	}
+
+	if got := readFileContent(filepath.Join(engDir, "account_counter")); got != "5" {
+		t.Errorf("account_counter = %q, want 5", got)
 	}
 
 	// A newly added domain must not reuse a port already in the import.
@@ -705,6 +801,71 @@ func TestIPCanonicalFormsAreRewritten(t *testing.T) {
 	}
 }
 
+// TestIPsMustStandAlone: the greedy patterns found addresses inside longer
+// tokens. An AWS ARN's "iam::1234..." became the IPv6 "::1234" and was mapped,
+// leaving the rest of the account ID in clear; Rust paths ("Self::de") and a
+// version string ("1.2.3.456") did the same.
+func TestIPsMustStandAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"arn:aws:iam::123456789012:role/x",
+		"Self::de and Foo::bar",
+		"v=1.2.3.456",
+		"ip2001:db8::1",
+	} {
+		if ips := targetsIn(text).ips; len(ips) > 0 {
+			t.Errorf("targetsIn(%q) found addresses %v", text, ips)
+		}
+	}
+}
+
+// TestIPv6AfterAColonIsDetected: a single colon before an address ("ip:...")
+// made every prefix of the greedy match invalid, so it was never detected.
+func TestIPv6AfterAColonIsDetected(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"ip:2001:4860:1::1",
+		"[2001:4860::8888]:443",
+		"inet6 2001:4860::8888/64",
+	} {
+		if ips := targetsIn(text).ips; len(ips) != 1 {
+			t.Errorf("targetsIn(%q) = %v, want one address", text, ips)
+		}
+	}
+}
+
+// TestFictionIPReversalRequiresAWholeAddress: reversing a fiction IP glued to
+// more digits built a different address, and where that lands on a valid one a
+// tool is sent to a host outside the engagement.
+func TestFictionIPReversalRequiresAWholeAddress(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, "example.com")
+
+	if err := addIPMapping(engDir, testPublicIP); err != nil {
+		t.Fatalf("addIPMapping: %v", err)
+	}
+
+	r2f, f2r := rewriters(t, engDir)
+
+	fiction := r2f.rewrite(testPublicIP)
+	if fiction == testPublicIP {
+		t.Fatal("IP was not mapped")
+	}
+
+	if got := f2r.rewrite("nmap " + fiction); got != "nmap "+testPublicIP {
+		t.Errorf("whole address did not reverse: %q", got)
+	}
+
+	for _, in := range []string{fiction + "5", fiction + ".1", "10" + fiction, fiction + "a"} {
+		if got := f2r.rewrite(in); got != in {
+			t.Errorf("reversed inside a longer address: %q -> %q", in, got)
+		}
+	}
+}
+
 func TestIPCounterRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -740,6 +901,62 @@ func TestOrgNameRequiresWordBoundary(t *testing.T) {
 
 	if got := r2f.rewrite("the GE incident"); !strings.Contains(got, "DEVTARGET") {
 		t.Errorf("org name as a whole word was not rewritten: %q", got)
+	}
+}
+
+// TestOrgNameIsRewrittenInsideIdentifiers: the org rule only matched where
+// the name stood alone, so "amazon_prod", "AmazonWebServices" and a path like
+// "/srv/amazon_backup/" went upstream with the org name intact.
+func TestOrgNameIsRewrittenInsideIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, f2r := rewriters(t, engDir)
+
+	tests := []struct{ in, want string }{
+		{"amazon_prod", "DEVTARGET_prod"},
+		{"AmazonWebServices", "DEVTARGETWebServices"},
+		{"AMAZONWebServices", "DEVTARGETWebServices"},
+		{"getAmazonToken()", "getDEVTARGETToken()"},
+		{"AWS_AMAZON_KEY", "AWS_DEVTARGET_KEY"},
+		{"/srv/amazon_backup/", "/srv/DEVTARGET_backup/"},
+		{"2amazon", "2DEVTARGET"},
+		// Not a part of an identifier: a different word, or a numbered name
+		// that would collide with another org's fiction.
+		{"amazonian", "amazonian"},
+		{"Amazonas", "Amazonas"},
+		{"amazon2", "amazon2"},
+	}
+
+	for _, tt := range tests {
+		got := r2f.rewrite(tt.in)
+		if got != tt.want {
+			t.Errorf("r2f(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+
+		if back := f2r.rewrite(got); !strings.EqualFold(back, tt.in) {
+			t.Errorf("round trip of %q = %q", tt.in, back)
+		}
+	}
+}
+
+// TestShortOrgNameStaysWholeWord: matching a two-letter org as part of an
+// identifier would fire on every fragment that happens to spell it.
+func TestShortOrgNameStaysWholeWord(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	if err := addDomain(engDir, "ge.com", "DEVTARGET"); err != nil {
+		t.Fatalf("addDomain: %v", err)
+	}
+
+	r2f, _ := rewriters(t, engDir)
+
+	for _, in := range []string{"isGe", "ge_x", "getGE"} {
+		if got := r2f.rewrite(in); got != in {
+			t.Errorf("short org rewritten inside %q: %q", in, got)
+		}
 	}
 }
 
@@ -816,7 +1033,7 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 
 	for range 16 {
 		wg.Go(func() {
-			if _, _, err := mapTargets(engDir, nil, "scan target-corp.com and 52.94.236.248"); err != nil {
+			if _, err := mapTargets(engDir, nil, "scan target-corp.com and 52.94.236.248"); err != nil {
 				t.Errorf("mapTargets: %v", err)
 			}
 		})

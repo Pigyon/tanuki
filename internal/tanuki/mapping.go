@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ type wildcardMapping struct {
 type rewriter struct {
 	ac        *acMachine
 	terms     *alternationRewriter
-	orgs      *alternationRewriter
+	orgs      *acMachine
 	wildcards []wildcardMapping
 	// ipFictions maps a canonical real IP to its fiction, so every textual
 	// form of that address (zero-padded, IPv6-compressed) is rewritten.
@@ -64,6 +65,9 @@ type rewriter struct {
 	// so a stream can tell whether its tail may be the start of one.
 	heads   map[string]bool
 	maxHead int
+	// residue finds the org names and custom-rule values a rewrite should have
+	// removed (r2f only), for the fail-closed gate; see survivors.
+	residue *acMachine
 	// memo remembers rewrites of long strings. A rewriter is rebuilt whenever
 	// the mappings change, so a remembered result is never stale.
 	memo memoCache[string]
@@ -227,7 +231,9 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 	sorted := make([]mappingEntry, len(mappings))
 	copy(sorted, mappings)
 
-	sort.Slice(sorted, func(i, j int) bool {
+	// Stable, so which of two equal-length rules for one value comes first,
+	// and therefore wins, is the table's order rather than chance.
+	sort.SliceStable(sorted, func(i, j int) bool {
 		if direction == directionR2F {
 			return len(sorted[i].Real) > len(sorted[j].Real)
 		}
@@ -238,7 +244,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 	var (
 		patterns     []string
 		replacements []string
-		bounded      []bool
+		bounds       []boundKind
 		orgRules     []termEntry
 	)
 
@@ -266,24 +272,25 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 		case direction == directionR2F:
 			patterns = append(patterns, m.Real)
 			replacements = append(replacements, m.Fiction)
-			bounded = append(bounded, isHostMapping(m.Type))
+			bounds = append(bounds, mappingBound(m.Type))
 			rw.explicit[strings.ToLower(m.Real)] = true
 
 		default:
 			patterns = append(patterns, m.Fiction)
 			replacements = append(replacements, m.Real)
-			bounded = append(bounded, isHostMapping(m.Type))
+			bounds = append(bounds, mappingBound(m.Type))
 		}
 	}
 
 	if len(patterns) > 0 {
-		rw.ac = newACMachine(patterns, replacements, bounded)
+		rw.ac = newACMachine(patterns, replacements, bounds)
 	}
 
-	rw.orgs = newAlternationRewriter(orgRules)
+	rw.orgs = newOrgMachine(orgRules)
 
 	if direction == directionR2F {
 		rw.terms = termRewriter
+		rw.residue = newResidueMachine(mappings)
 	} else {
 		rw.heads, rw.maxHead = fictionHeads(mappings)
 	}
@@ -328,24 +335,80 @@ func (rw *rewriter) splitHeld(text string) (send, hold string) {
 	return text, ""
 }
 
-// isHostMapping reports whether a mapping's values are hostnames, and so must
-// not match inside a longer name. Types whose values are deliberately open
-// ended are excluded: "s3://acme" is meant to cover every bucket that starts
-// with it, so there matching a longer string is the point. Custom rules keep
-// the same greedy behaviour.
-func isHostMapping(typ string) bool {
-	return typ == "domain" || typ == "email"
+// mappingBound says where a mapping's value may match. Hostnames must not
+// match inside a longer name. Types whose values are deliberately open ended
+// are not bounded: "s3://acme" is meant to cover every bucket that starts with
+// it, so there matching a longer string is the point. Custom rules keep the
+// same greedy behaviour.
+func mappingBound(typ string) boundKind {
+	switch typ {
+	case "domain", "email":
+		return boundHost
+	case "account":
+		// Not inside a longer run of digits or an identifier.
+		return boundWord
+	case "ip":
+		// Reversing an address glued to more digits built a different one:
+		// with 127.0.0.3 mapped, "127.0.0.35" became "52.94.236.2485", and
+		// where that lands on a valid address a tool goes to a host that is
+		// not in scope. Only the f2r direction reaches here; r2f matches an
+		// address through findIPs, which already requires it to stand alone.
+		return boundAddress
+	}
+
+	return boundNone
 }
 
-// orgRule orients an org mapping for the given direction. Org names go
-// through the word-bounded alternation so a short one ("ge", "hp") does not
-// shred unrelated words ("message" -> "messaDEV...").
+// minOrgPartLen is the shortest org name matched as part of an identifier.
+// A shorter one is too common a fragment: "x" would fire in "x_axis" and "ge"
+// in "isGe", so those still have to stand as a whole word.
+const minOrgPartLen = 4
+
+// orgRule orients an org mapping for the given direction.
 func orgRule(m mappingEntry, direction string) termEntry {
 	if direction == directionR2F {
 		return termEntry{From: m.Real, To: m.Fiction}
 	}
 
 	return termEntry{From: m.Fiction, To: m.Real}
+}
+
+// newOrgMachine matches org names as words, or as parts of an identifier
+// ("acme_prod", "AcmeCloud"), never inside an unrelated word, so a short one
+// ("ge") does not shred "message" into "messaDEV...". Returns nil when there
+// are no rules.
+func newOrgMachine(rules []termEntry) *acMachine {
+	var (
+		patterns, replacements []string
+		bounds                 []boundKind
+	)
+
+	seen := map[string]bool{}
+
+	for _, r := range rules {
+		key := strings.ToLower(r.From)
+		if key == "" || seen[key] {
+			continue
+		}
+
+		// Rules arrive longest first, so the first for a name wins.
+		seen[key] = true
+
+		bound := boundWord
+		if len(r.From) >= minOrgPartLen {
+			bound = boundWordPart
+		}
+
+		patterns = append(patterns, r.From)
+		replacements = append(replacements, r.To)
+		bounds = append(bounds, bound)
+	}
+
+	if len(patterns) == 0 {
+		return nil
+	}
+
+	return newACMachine(patterns, replacements, bounds)
 }
 
 func (rw *rewriter) rewrite(text string) string {
@@ -363,11 +426,70 @@ func (rw *rewriter) rewriteText(text string) string {
 		text = rw.ac.replaceAll(text)
 	}
 
+	// Terminology before org, so an org that happens to share a word with a
+	// replacement term is still rewritten and the gate never sees it.
+	text = rw.terms.rewrite(text)
+
 	// Org after the automaton, so a mapped domain is consumed before its bare
 	// org name is matched.
-	text = rw.orgs.rewrite(text)
+	if rw.orgs != nil {
+		text = rw.orgs.replaceAll(text)
+	}
 
-	return rw.terms.rewrite(text)
+	return text
+}
+
+// newResidueMachine matches every org name and custom-rule value with the
+// bounds the rewrite uses for it. Domains, emails and IPs are left to the
+// target scan, which also catches the ones that were never mapped.
+func newResidueMachine(mappings []mappingEntry) *acMachine {
+	var orgRules []termEntry
+
+	var custom []string
+
+	for _, m := range mappings {
+		switch m.Type {
+		case "org":
+			orgRules = append(orgRules, orgRule(m, directionR2F))
+		case "custom":
+			custom = append(custom, m.Real)
+		}
+	}
+
+	orgs := newOrgMachine(orgRules)
+	if orgs == nil && len(custom) == 0 {
+		return nil
+	}
+
+	patterns := slices.Clone(custom)
+	bounds := make([]boundKind, len(custom))
+
+	if orgs != nil {
+		patterns = append(patterns, orgs.patterns...)
+		bounds = append(bounds, orgs.bounds...)
+	}
+
+	return newACMachine(patterns, patterns, bounds)
+}
+
+// survivors returns the mapped org names and custom-rule values still present
+// in text that has been rewritten. In a working pipeline it is empty: each is
+// matched exactly as the rewrite matched it, so anything found is a value the
+// rewrite failed to replace.
+func (rw *rewriter) survivors(text string) []string {
+	if rw.residue == nil {
+		return nil
+	}
+
+	var found []string
+
+	for _, m := range rw.residue.find(text) {
+		found = append(found, strings.ToLower(rw.residue.patterns[m.index]))
+	}
+
+	slices.Sort(found)
+
+	return slices.Compact(found)
 }
 
 // rewriteWildcards replaces every wildcard-covered hostname that has no
@@ -394,7 +516,9 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	for _, loc := range locs {
 		// Compare lowercased so "API.AMAZON.COM" is caught before the exact
 		// pass rewrites its base and leaks the "API" label.
-		fiction, ok := rw.wildcardFiction(strings.ToLower(text[loc[0]:loc[1]]))
+		host := strings.ToLower(text[loc[0]:loc[1]])
+
+		fiction, n, ok := rw.wildcardPrefix(host)
 		if !ok {
 			continue
 		}
@@ -402,7 +526,7 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 		b.WriteString(text[pos:loc[0]])
 		b.WriteString(fiction)
 
-		pos = loc[1]
+		pos = loc[0] + n
 	}
 
 	if pos == 0 {
@@ -412,6 +536,25 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	b.WriteString(text[pos:])
 
 	return b.String()
+}
+
+// wildcardPrefix returns the fiction covering host, and how much of host it
+// covers. host must already be lowercased.
+//
+// Each whole-label prefix is tried, longest first, so a target carrying a file
+// extension ("bounty.acme.com.txt") is covered up to the hostname and the
+// extension is left alone. Without that the token matched no wildcard at all,
+// and the subdomain label went upstream beside the rewritten base name.
+// Splitting on labels is what keeps this safe: "acme.com" is not a prefix of
+// "acme.community", so an unrelated name is still never touched.
+func (rw *rewriter) wildcardPrefix(host string) (fiction string, n int, ok bool) {
+	for end := len(host); end > 0; end = strings.LastIndexByte(host[:end], '.') {
+		if f, hit := rw.wildcardFiction(host[:end]); hit {
+			return f, end, true
+		}
+	}
+
+	return "", 0, false
 }
 
 // wildcardFiction returns the fiction covering host, which must already be
@@ -675,34 +818,46 @@ func resetCountersFromMappings(engDir string) error {
 		portNext = p
 	}
 
-	ipNext := 2
-	orgNext := 1
+	next := map[string]int{"port_counter": portNext, "ip_counter": 2, "org_counter": 1, "account_counter": 1}
 
 	for _, m := range loadMappings(engDir) {
-		if p, ok := portFromFiction(m.Fiction); ok && p >= portNext {
-			portNext = p + 1
-		}
-
-		if n, ok := ipCounterFromFiction(m.Fiction); ok && n >= ipNext {
-			ipNext = n + 1
-		}
-
-		if m.Type == "org" {
-			if n := orgNumberFromFiction(m.Fiction); n >= orgNext {
-				orgNext = n + 1
-			}
+		for counter, n := range usedCounters(m) {
+			next[counter] = max(next[counter], n+1)
 		}
 	}
 
-	if err := writeFileContent(filepath.Join(engDir, "port_counter"), strconv.Itoa(portNext)); err != nil {
-		return err
+	for _, counter := range slices.Sorted(maps.Keys(next)) {
+		if err := writeFileContent(filepath.Join(engDir, counter), strconv.Itoa(next[counter])); err != nil {
+			return err
+		}
 	}
 
-	if err := writeFileContent(filepath.Join(engDir, "ip_counter"), strconv.Itoa(ipNext)); err != nil {
-		return err
+	return nil
+}
+
+// usedCounters returns the counter values a mapping's fiction was allocated
+// from, keyed by counter file.
+func usedCounters(m mappingEntry) map[string]int {
+	used := map[string]int{}
+
+	if p, ok := portFromFiction(m.Fiction); ok {
+		used["port_counter"] = p
 	}
 
-	return writeFileContent(filepath.Join(engDir, "org_counter"), strconv.Itoa(orgNext))
+	if n, ok := ipCounterFromFiction(m.Fiction); ok {
+		used["ip_counter"] = n
+	}
+
+	switch m.Type {
+	case "org":
+		used["org_counter"] = orgNumberFromFiction(m.Fiction)
+	case "account":
+		if n, err := strconv.Atoi(m.Fiction); err == nil {
+			used["account_counter"] = n
+		}
+	}
+
+	return used
 }
 
 func resolveFictionOrg(engDir, fictionOrg string) string {
@@ -838,6 +993,50 @@ func isPrivateIP(ip string) bool {
 	return parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsUnspecified()
 }
 
+// accountRegexes find AWS account IDs where the context says that is what a
+// twelve-digit number is: the account field of an ARN, and an "Account" or
+// "account_id" key or variable (aws sts get-caller-identity,
+// AWS_ACCOUNT_ID=...). A bare twelve-digit number is too common to take.
+var accountRegexes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\barn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):`),
+	regexp.MustCompile(`(?i)account(?:[_ -]?id)?["']?\s*[:=]\s*["']?(\d{12})\b`),
+}
+
+var awsAccountRegex = regexp.MustCompile(`^\d{12}$`)
+
+// accountFictionPrefix starts every fiction account ID. No real account is
+// numbered that low, so scanning tanuki's own output never finds one.
+const accountFictionPrefix = "0000000"
+
+// maxFictionAccount is the last counter value that keeps the prefix.
+const maxFictionAccount = 99999
+
+func isFictionAccount(id string) bool {
+	return strings.HasPrefix(id, accountFictionPrefix)
+}
+
+// addAccountMapping gives an AWS account ID a fiction of the same shape, so
+// an ARN still reads as an ARN.
+func addAccountMapping(engDir, id string) error {
+	unlock := lockAllocation(engDir)
+	defer unlock()
+
+	if mappingExists(engDir, "account", id) {
+		return nil
+	}
+
+	n, err := nextCounter(engDir, "account_counter", "1")
+	if err != nil {
+		return err
+	}
+
+	if n > maxFictionAccount {
+		return fmt.Errorf("fiction account range exhausted for %s (would leak to upstream)", id)
+	}
+
+	return addMapping(engDir, "account", id, fmt.Sprintf("%012d", n))
+}
+
 func showMappings() error {
 	eng, err := requireEngagement()
 	if err != nil {
@@ -862,7 +1061,7 @@ func showMappings() error {
 
 var (
 	ipv4Regex = regexp.MustCompile(`\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b`)
-	// Deliberately greedy: longestValidIP validates each candidate, and
+	// Deliberately greedy: findIPs validates each candidate, and
 	// under-matching would leave part of a real address unmapped (a leak).
 	ipv6Regex = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,}(?:\.\d{1,3}){0,3}`)
 )
@@ -901,11 +1100,47 @@ func stripLeadingZerosV4(s string) string {
 	return strings.Join(parts, ".")
 }
 
-// longestValidIP returns the canonical form of the longest IP prefix of
-// candidate, or "" if none parses (trimming trailing junk from a greedy match).
-func longestValidIP(candidate string) string {
-	ip, _ := longestValidIPPrefix(candidate)
-	return ip
+// ipMatch is one address found in text: its canonical form and its span.
+type ipMatch struct {
+	ip         string
+	start, end int
+}
+
+// findIPs returns the addresses re finds in text. A candidate is trimmed to
+// its longest valid prefix, loses a single leading colon ("ip:2001:db8::1"
+// otherwise never parsed), and must stand alone: a letter, digit or "_" on
+// either side means it is part of a longer token, such as the "::1234" the
+// greedy pattern finds in "arn:aws:iam::123456789012", the "f::de" in Rust's
+// "Self::de", or the "1.2.3.45" in "1.2.3.456".
+func findIPs(text string, re *regexp.Regexp) []ipMatch {
+	var found []ipMatch
+
+	for _, loc := range re.FindAllStringIndex(text, -1) {
+		start := loc[0]
+		if strings.HasPrefix(text[start:loc[1]], ":") && !strings.HasPrefix(text[start:loc[1]], "::") {
+			start++
+		}
+
+		ip, n := longestValidIPPrefix(text[start:loc[1]])
+		if n == 0 || !standsAlone(text, start, start+n) {
+			continue
+		}
+
+		found = append(found, ipMatch{ip: ip, start: start, end: start + n})
+	}
+
+	return found
+}
+
+// standsAlone reports whether text[start:end] is not glued to a letter, digit
+// or "_" on either side.
+func standsAlone(text string, start, end int) bool {
+	glued := func(r rune) bool { return isAlnum(r) || r == '_' }
+
+	before, _, _ := around(text, start)
+	_, after, _ := around(text, end)
+
+	return !glued(before) && !glued(after)
 }
 
 func longestValidIPPrefix(candidate string) (canonical string, prefixLen int) {
@@ -931,27 +1166,20 @@ func (rw *rewriter) rewriteIPs(text string) string {
 }
 
 func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
-	locs := re.FindAllStringIndex(text, -1)
-	if locs == nil {
-		return text
-	}
-
 	var b strings.Builder
 
 	pos := 0
 
-	for _, loc := range locs {
-		ip, n := longestValidIPPrefix(text[loc[0]:loc[1]])
-
-		fiction, ok := rw.ipFictions[ip]
-		if n == 0 || !ok {
+	for _, m := range findIPs(text, re) {
+		fiction, ok := rw.ipFictions[m.ip]
+		if !ok {
 			continue
 		}
 
-		b.WriteString(text[pos:loc[0]])
+		b.WriteString(text[pos:m.start])
 		b.WriteString(fiction)
 
-		pos = loc[0] + n
+		pos = m.end
 	}
 
 	if pos == 0 {
@@ -974,19 +1202,54 @@ func hasCommonTLD(domain string) bool {
 	return commonTLDs[strings.ToLower(parts[len(parts)-1])]
 }
 
+// isRealDomain reports whether domain ends in an ICANN-managed public suffix
+// (.in, .it, .app, ...), with a label in front of it. The curated TLD list is
+// the filter for a bare token; this is the broader test used only where the
+// surroundings already say the token is a host (see hostContext). It accepts
+// every real TLD without accepting code like "config.yaml" or "main.go", whose
+// final element is not a public suffix at all.
+func isRealDomain(domain string) bool {
+	suffix, icann := publicsuffix.PublicSuffix(domain)
+
+	return icann && len(suffix) < len(domain)
+}
+
+// hostContext reports whether text[start:end] sits where only a hostname does:
+// right after a URL scheme ("https://host") or an "@" ("user@host"), or with a
+// path or port right after it ("host/path", "host:443"). A bare token on an
+// uncommon TLD, which is far more often code than a domain, is deliberately
+// not enough; one of these markers is.
+func hostContext(text string, start, end int) bool {
+	if pre := text[:start]; strings.HasSuffix(pre, "://") || strings.HasSuffix(pre, "@") {
+		return true
+	}
+
+	if end >= len(text) {
+		return false
+	}
+
+	switch text[end] {
+	case '/':
+		return true
+	case ':':
+		return end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9'
+	default:
+		return false
+	}
+}
+
 // scanned is what scanTargets found in one string.
-type scanned struct{ domains, ips []string }
+type scanned struct{ domains, ips, accounts []string }
 
 var targetScans memoCache[scanned]
 
 // targetsIn returns the distinct real-looking values in text: domains on a
-// common TLD, lowercased, and public IPs in canonical form. It depends on text
-// alone, so long strings are scanned once (see memoCache); callers apply the
-// ignore list, which can change, and must not modify the slices.
-func targetsIn(text string) (domains, ips []string) {
-	s := targetScans.get(text, scanTargets)
-
-	return s.domains, s.ips
+// common TLD, lowercased, public IPs in canonical form, and AWS account IDs.
+// It depends on text alone, so long strings are scanned once (see memoCache);
+// callers apply the ignore list, which can change, and must not modify the
+// slices.
+func targetsIn(text string) scanned {
+	return targetScans.get(text, scanTargets)
 }
 
 func scanTargets(text string) scanned {
@@ -994,34 +1257,50 @@ func scanTargets(text string) scanned {
 
 	seen := make(map[string]bool)
 
-	for _, raw := range domainRegex.FindAllString(text, -1) {
-		if domain := strings.ToLower(raw); hasCommonTLD(domain) && !seen[domain] {
+	for _, loc := range domainRegex.FindAllStringIndex(text, -1) {
+		domain := strings.ToLower(text[loc[0]:loc[1]])
+		if seen[domain] {
+			continue
+		}
+
+		// A common TLD stands on its own; any other real TLD needs the
+		// surroundings to say the token is a host, not an attribute access.
+		if hasCommonTLD(domain) || (isRealDomain(domain) && hostContext(text, loc[0], loc[1])) {
 			seen[domain] = true
 			s.domains = append(s.domains, domain)
 		}
 	}
 
-	for _, candidate := range slices.Concat(ipv4Regex.FindAllString(text, -1), ipv6Regex.FindAllString(text, -1)) {
-		if ip := longestValidIP(candidate); ip != "" && !isPrivateIP(ip) && !seen[ip] {
-			seen[ip] = true
-			s.ips = append(s.ips, ip)
+	for _, m := range slices.Concat(findIPs(text, ipv4Regex), findIPs(text, ipv6Regex)) {
+		if !isPrivateIP(m.ip) && !seen[m.ip] {
+			seen[m.ip] = true
+			s.ips = append(s.ips, m.ip)
+		}
+	}
+
+	for _, re := range accountRegexes {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if id := m[1]; !isFictionAccount(id) && !seen[id] {
+				seen[id] = true
+				s.accounts = append(s.accounts, id)
+			}
 		}
 	}
 
 	return s
 }
 
-// findNewTargets returns the domains and public IPs in texts that have no
-// mapping yet, reading mappings.conf once for all of them.
-func findNewTargets(engDir string, texts []string, extraIgnored ...string) (domains, ips []string) {
+// findNewTargets returns the domains, public IPs and AWS account IDs in texts
+// that have no mapping yet, reading mappings.conf once for all of them.
+func findNewTargets(engDir string, texts []string, extraIgnored ...string) scanned {
 	existing := mappingKeys(engDir)
 	emitted := make(map[string]bool)
-	domains, ips = []string{}, []string{}
+	found := scanned{domains: []string{}, ips: []string{}, accounts: []string{}}
 
 	for _, text := range texts {
-		foundDomains, foundIPs := targetsIn(text)
+		s := targetsIn(text)
 
-		for _, domain := range foundDomains {
+		for _, domain := range s.domains {
 			if isIgnoredDomain(domain, extraIgnored...) {
 				continue
 			}
@@ -1031,25 +1310,30 @@ func findNewTargets(engDir string, texts []string, extraIgnored ...string) (doma
 			for _, candidate := range []string{extractBaseDomain(domain), domain} {
 				if !emitted[candidate] && !existing["domain|"+candidate] {
 					emitted[candidate] = true
-					domains = append(domains, candidate)
+					found.domains = append(found.domains, candidate)
 				}
 			}
 		}
 
-		for _, ip := range foundIPs {
+		for _, ip := range s.ips {
 			if !emitted[ip] && !existing["ip|"+ip] {
 				emitted[ip] = true
-				ips = append(ips, ip)
+				found.ips = append(found.ips, ip)
+			}
+		}
+
+		for _, id := range s.accounts {
+			if !emitted[id] && !existing["account|"+id] {
+				emitted[id] = true
+				found.accounts = append(found.accounts, id)
 			}
 		}
 	}
 
-	return domains, ips
+	return found
 }
 
 // findNewDomains returns the domains in text that have no mapping yet.
 func findNewDomains(text, engDir string) []string {
-	domains, _ := findNewTargets(engDir, []string{text})
-
-	return domains
+	return findNewTargets(engDir, []string{text}).domains
 }

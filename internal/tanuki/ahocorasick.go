@@ -1,6 +1,11 @@
 package tanuki
 
-import "sort"
+import (
+	"sort"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // fold lowercases an ASCII byte for case-insensitive matching, so a mixed-case
 // target ("aMaZoN") is not missed and leaked. Matches slice the original text.
@@ -19,21 +24,42 @@ type acNode struct {
 	depth    int
 }
 
+// boundKind says what has to surround a match for it to count.
+type boundKind uint8
+
+const (
+	// boundNone matches anywhere. A cloud prefix or custom rule is meant to
+	// cover every longer string that starts with it.
+	boundNone boundKind = iota
+	// boundHost refuses a match that is only the start of a longer hostname.
+	boundHost
+	// boundWord needs a non-word character or the edge of the text on both
+	// sides, as the regexp \b does.
+	boundWord
+	// boundAddress refuses a match that is glued to a character an address
+	// can continue with, so a mapped IP is not found inside a longer one.
+	boundAddress
+	// boundWordPart also accepts the edges of one part of a compound
+	// identifier, so an org name is found in "acme_prod", "AcmeCloud" and
+	// "getACMEToken" rather than only where it stands alone.
+	boundWordPart
+)
+
 type acMachine struct {
 	root     *acNode
 	patterns []string
 	replace  []string
-	// bounded marks patterns that are hostnames and so must not match inside
-	// a longer name; see dropContinuedMatches. A nil slice bounds nothing.
-	bounded []bool
+	// bounds says, per pattern, where a match may start and end; see
+	// keepBounded. A nil slice bounds nothing.
+	bounds []boundKind
 }
 
-func newACMachine(patterns, replacements []string, bounded []bool) *acMachine {
+func newACMachine(patterns, replacements []string, bounds []boundKind) *acMachine {
 	m := &acMachine{
 		root:     &acNode{children: map[byte]*acNode{}},
 		patterns: patterns,
 		replace:  replacements,
-		bounded:  bounded,
+		bounds:   bounds,
 	}
 
 	for i, p := range patterns {
@@ -142,12 +168,18 @@ func (m *acMachine) search(text string) []acMatch {
 	return matches
 }
 
+// find returns every match whose pattern's bound holds, overlapping ones
+// included.
+func (m *acMachine) find(text string) []acMatch {
+	return m.keepBounded(text, m.search(text))
+}
+
 func (m *acMachine) replaceAll(text string) string {
 	if len(m.patterns) == 0 {
 		return text
 	}
 
-	matches := m.dropContinuedMatches(text, m.search(text))
+	matches := m.find(text)
 	if len(matches) == 0 {
 		return text
 	}
@@ -184,46 +216,172 @@ func isLabelByte(b byte) bool {
 	}
 }
 
-// domainContinues reports whether the text at i carries on a hostname, so the
-// match ending there is only a prefix of a longer name.
-func domainContinues(text string, i int) bool {
+// domainContinues reports whether the hostname matched up to i carries on into
+// a longer name, so the match is only a prefix of a different host.
+//
+// A dot is the hard case: "acme.com.br" and "acme.community" are other hosts,
+// while "acme.com.txt" is a file named after one. Telling them apart by eye is
+// what leaked -- every dot counted as a continuation, so a target with a file
+// extension after it was left for the org rule, which rewrote the registrable
+// name and left the subdomain label in clear ("bounty.acme.com.txt"). The
+// whole token decides instead: it carries on only when it is itself a domain.
+func domainContinues(text string, start, i int) bool {
 	if i >= len(text) {
 		return false
 	}
 
-	if b := text[i]; b == '.' || b == '-' {
+	b := text[i]
+
+	switch {
+	case b == '-':
 		// A separator continues the name only when a label follows it, so
-		// "amazon.com." at the end of a sentence is still the whole host.
+		// "acme.com-" at the end of a word is still the whole host.
 		return i+1 < len(text) && isLabelByte(text[i+1])
+	case b != '.':
+		return isLabelByte(b)
+	case i+1 >= len(text) || !isLabelByte(text[i+1]):
+		// "acme.com." at the end of a sentence is still the whole host.
+		return false
 	}
 
-	return isLabelByte(text[i])
+	return isRealDomain(hostToken(text, start, i))
 }
 
-// dropContinuedMatches discards a bounded pattern that matched only the start
-// of a longer hostname, so the mapping for "acme.com" does not fire inside
-// "acme.community" or "acme.com.br" and rewrite half of a different name.
-//
-// Only the right-hand side is checked. Refusing a match that is *preceded* by
-// label bytes would leave "notacme.com" whole, and hiding the target matters
-// more than leaving an unrelated name intact; the org rule still covers the
-// bare label in whatever the automaton declines.
-func (m *acMachine) dropContinuedMatches(text string, matches []acMatch) []acMatch {
-	if m.bounded == nil {
+// hostToken returns the whole hostname-shaped run starting at start, which
+// reaches past i through any further labels.
+func hostToken(text string, start, i int) string {
+	end := i
+
+	for end < len(text) && (isLabelByte(text[end]) || text[end] == '.') {
+		end++
+	}
+
+	// A trailing dot is punctuation, not a label.
+	for end > i && text[end-1] == '.' {
+		end--
+	}
+
+	return strings.ToLower(text[start:end])
+}
+
+// addressContinues reports whether the byte at i could carry on an IP
+// address, so a match ending (or starting) there is part of a longer one.
+func addressContinues(text string, i int) bool {
+	if i < 0 || i >= len(text) {
+		return false
+	}
+
+	b := text[i]
+
+	switch {
+	case b >= '0' && b <= '9', b >= 'a' && b <= 'f', b >= 'A' && b <= 'F':
+		return true
+	default:
+		return b == '.' || b == ':'
+	}
+}
+
+// keepBounded discards the matches whose surroundings their pattern's bound
+// rules out. It runs before the longest match is chosen, so a longer pattern
+// that fails its bound leaves the way clear for a shorter one that holds.
+func (m *acMachine) keepBounded(text string, matches []acMatch) []acMatch {
+	if m.bounds == nil {
 		return matches
 	}
 
 	kept := make([]acMatch, 0, len(matches))
 
 	for _, match := range matches {
-		if match.index < len(m.bounded) && m.bounded[match.index] && domainContinues(text, match.end) {
-			continue
+		if m.isBounded(text, match) {
+			kept = append(kept, match)
 		}
-
-		kept = append(kept, match)
 	}
 
 	return kept
+}
+
+// isBounded reports whether match satisfies its pattern's bound.
+//
+// A host is only checked on the right. Refusing a match that is *preceded* by
+// label bytes would leave "notacme.com" whole, and hiding the target matters
+// more than leaving an unrelated name intact; the org rule still covers the
+// bare label in whatever the automaton declines.
+func (m *acMachine) isBounded(text string, match acMatch) bool {
+	if match.index >= len(m.bounds) {
+		return true
+	}
+
+	switch m.bounds[match.index] {
+	case boundHost:
+		return !domainContinues(text, match.start, match.end)
+	case boundWord:
+		return wordEdge(text, match.start) && wordEdge(text, match.end)
+	case boundAddress:
+		return !addressContinues(text, match.start-1) && !addressContinues(text, match.end)
+	case boundWordPart:
+		return partEdge(text, match.start) && partEdge(text, match.end)
+	case boundNone:
+		return true
+	}
+
+	return true
+}
+
+// around returns the runes before and at i, and the one after that, with
+// utf8.RuneError standing in for any that falls outside text.
+func around(text string, i int) (before, at, after rune) {
+	before, at, after = utf8.RuneError, utf8.RuneError, utf8.RuneError
+
+	if i > 0 {
+		before, _ = utf8.DecodeLastRuneInString(text[:i])
+	}
+
+	if i < len(text) {
+		var size int
+
+		at, size = utf8.DecodeRuneInString(text[i:])
+
+		if i+size < len(text) {
+			after, _ = utf8.DecodeRuneInString(text[i+size:])
+		}
+	}
+
+	return before, at, after
+}
+
+func isAlnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// wordEdge reports whether i is a word boundary, counting "_" as part of a
+// word as \b does, but for every script rather than ASCII alone.
+func wordEdge(text string, i int) bool {
+	before, at, _ := around(text, i)
+
+	isWord := func(r rune) bool { return isAlnum(r) || r == '_' }
+
+	return !isWord(before) || !isWord(at)
+}
+
+// partEdge reports whether i starts or ends one part of an identifier: a
+// separator ("_" included) or the edge of the text, a digit giving way to a
+// letter, a lower-case letter to an upper-case one ("acme|Cloud"), or the
+// last capital of an upper-case run that starts a new word ("ACME|Token").
+//
+// A letter giving way to a digit is deliberately not an edge. Fiction orgs
+// are numbered (DEVTARGET, DEVTARGET2), so rewriting "acme" inside "acme2"
+// would produce another org's fiction and reverse to the wrong target.
+func partEdge(text string, i int) bool {
+	before, at, after := around(text, i)
+
+	switch {
+	case !isAlnum(before) || !isAlnum(at):
+		return true
+	case unicode.IsDigit(before) && unicode.IsLetter(at):
+		return true
+	case unicode.IsLower(before) && unicode.IsUpper(at):
+		return true
+	default:
+		return unicode.IsUpper(before) && unicode.IsUpper(at) && unicode.IsLower(after)
+	}
 }
 
 func selectLongestNonOverlapping(matches []acMatch, patterns []string) []acMatch {

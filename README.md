@@ -46,7 +46,7 @@ Tanuki sits between your local **Claude Code** agent and the **Anthropic API**, 
 
 Tanuki is an anonymization proxy built for AI-assisted security testing and bug bounty hunting. When you drive an agent like Claude Code through a pentest, every real domain, IP, and payload in your prompts leaves your machine. That's an OpSec risk, and it can also breach bug bounty program rules or an NDA.
 
-Tanuki runs as a Docker container and transparently intercepts that API traffic. Before a prompt leaves your machine, it swaps real target data (domains, subdomains, IPs, emails, paths, cloud identifiers, and aggressive security terminology) for harmless fictional development equivalents. When the model responds, the fiction is mapped back to reality so your local tools execute against the real targets. The model believes it is helping you debug a local dev application, and the upstream provider is blind to your actual engagement.
+Tanuki runs as a Docker container and transparently intercepts that API traffic. Before a prompt leaves your machine, it swaps real target data (domains, subdomains, IPs, emails, paths, cloud identifiers, AWS account IDs, and aggressive security terminology) for harmless fictional development equivalents. When the model responds, the fiction is mapped back to reality so your local tools execute against the real targets. The model believes it is helping you debug a local dev application, and the upstream provider is blind to your actual engagement.
 
 ## How it works
 
@@ -102,6 +102,7 @@ You're testing `bounty.amazon.com`. Here's what Tanuki does:
 | `admin@amazon.com`      | `admin@devtarget.local`      |
 | `Amazon`                | `DEVTARGET`                  |
 | `52.94.236.248`         | `127.0.0.3`                  |
+| `arn:aws:iam::123456789012:role/x` | `arn:aws:iam::000000000001:role/x` |
 | `/var/www/amazon/`      | `/var/www/dev/devtarget/`    |
 | `s3://amazon-prod`      | `file:///tmp/devtarget-prod` |
 | `SQL injection`         | `parameterized query test`   |
@@ -199,6 +200,7 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 | `init <name> [--fiction-org NAME]`  | Create a named engagement                          |
 | `add <domain> [--fiction-org NAME]` | Pre-seed a target domain                           |
 | `add-ip <ip>`                       | Pre-seed an IP mapping                             |
+| `add-account <id>`                  | Pre-seed an AWS account ID mapping                 |
 | `add-rule <real> <fiction>`         | Add a custom rewrite rule                          |
 | `map`                               | Show the current mapping table                     |
 | `status`                            | Show engagement info                               |
@@ -219,12 +221,13 @@ All commands run via `./tanuki <command>` (or `docker compose exec tanuki /tanuk
 
 | Type            | Detection                              | Fiction                    |
 | --------------- | -------------------------------------- | -------------------------- |
-| Domains         | Auto-detected in prompts & tool output | `localhost:<port>`         |
-| Org names       | Derived from domain                    | `DEVTARGET` (configurable) |
+| Domains         | Auto-detected in prompts & tool output; any real TLD in a URL, after `@`, or with a path/port | `localhost:<port>`         |
+| Org names       | Derived from domain; also matched inside identifiers (`acme_prod`, `AcmeCloud`) | `DEVTARGET` (configurable) |
 | Emails          | Derived from domain                    | `user@devtarget.local`     |
 | IPs (v4 + v6)   | Auto-detected in prompts & tool output | `127.0.0.x` / `::ffff:...` |
 | Paths           | Derived from org name                  | `/dev/devtarget/`          |
 | Cloud resources | Derived from org name                  | `file:///tmp/devtarget...` |
+| AWS account IDs | In ARNs and `Account`/`account_id` fields | `000000000001`             |
 | Custom rules    | User-defined via env or CLI            | User-defined               |
 
 ### Terminology (built-in, applied to all engagements)
@@ -269,7 +272,7 @@ Set in `compose.yaml`:
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug cannot leak. Nothing protects against a value the detector never recognised in the first place — the two limitations below are therefore the ones that matter.
-- **Curated TLD list for auto-detection.** Auto-detection uses a curated list of ~70 common TLDs to avoid false positives from code patterns like `readme.md`, `foo.bar`, or `user.id`. TLDs that collide with everyday code (`.info`, `.name`, `.app`, `.store`, `.top`, `.site`, as in `logger.info` or `user.name`) are left out. Domains on those or other unusual TLDs (`.pizza`, `.click`, `.it`, `.id`) can be added manually with `./tanuki add`.
+- **A bare token needs a common TLD.** Auto-detection reads a hostname on any real (ICANN) TLD where the surroundings say it is one: after `://` or `@`, or with a path or port right after it (`portal.acme.in/login`, `ops@acme.pl`, `acme.app:8443`). A token standing on its own is held to a curated list of ~70 common TLDs instead, because attribute access in code spells a real TLD often enough (`item.data.id`, `logger.info`, `req.app`) that taking those as domains polluted the table. So a bare mention of a target on an unusual TLD, with no URL, `@`, path or port around it, is still missed; add it with `./tanuki add`.
 - **Ignored domains need an explicit `add` to become targets.** `github.com`, `google.com`, and your own email domain are skipped by auto-detection so Claude Code's own git remotes, connectors, and account context don't pollute the table. The trade-off is that auto-detection alone will not map one of these, so on the rare engagement that targets GitHub or Google you must `./tanuki add github.com` first; the residual check also skips ignored domains, so it will not catch the omission for you.
 - **Thinking stays in fiction.** Thinking blocks are signed by the API, so they are passed through unchanged in both directions. Thinking shown in Claude Code reads in fiction terms.
 - **Streamed text is held back briefly.** A fiction value can be streamed a few characters per event, so the proxy holds back the end of a text or tool-input block while it could still be the start of one, and sends it once the next event settles it. Display can lag by a few characters; the full value always arrives reversed.
@@ -297,7 +300,7 @@ $ ./tanuki verify report.md
         93.184.216.34
 
 2 value(s) have no mapping and would be sent as-is.
-Add them with: tanuki add <domain> / tanuki add-ip <ip>
+Add them with: tanuki add <domain> / tanuki add-ip <ip> / tanuki add-account <id>
 ```
 
 It exits non-zero when it finds something, so it drops into a pre-submission hook or CI as-is.
@@ -306,7 +309,7 @@ It exits non-zero when it finds something, so it drops into a pre-submission hoo
 
 The proxy will not forward a prompt it cannot anonymize.
 
-**Every body is checked after it is rewritten.** The last thing that happens before a `/v1/messages` request leaves is a re-scan for anything that still looks like a real target. If one survived, the request is refused with `400` and the value is written to the tanuki log — never into the HTTP response, which the client may fold into its next prompt. In a working pipeline this never fires; when it does, it means the rewriter missed something and the body must not go upstream.
+**Every body is checked after it is rewritten.** The last thing that happens before a `/v1/messages` request leaves is a re-scan for anything that still looks like a real target, and for any mapped org name or custom-rule value the rewrite left behind. If one survived, the request is refused with `400` and the value is written to the tanuki log — never into the HTTP response, which the client may fold into its next prompt. In a working pipeline this never fires; when it does, it means the rewriter missed something and the body must not go upstream.
 
 **Targets are mapped wherever they first appear.** The proxy runs detection over every outbound body, so a target in the prompt you type, in tool output, in an `@`-mentioned file, a paste, `CLAUDE.md`, a session resumed elsewhere, or from any client that is not Claude Code gets a fiction before the rewrite rather than travelling upstream in the clear.
 

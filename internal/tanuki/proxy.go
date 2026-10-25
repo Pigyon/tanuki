@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"slices"
 	"strings"
 	"syscall"
@@ -167,7 +168,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	_ = r.Body.Close()
 
-	isMessagesPath := strings.HasPrefix(r.URL.Path, "/v1/messages")
+	isMessagesPath := isMessagesRequest(r.URL.Path)
 
 	if isMessagesPath && len(body) > 0 {
 		anonymized, err := anonymizeUpstreamBody(body)
@@ -227,6 +228,17 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		forwardWithRewrite(w, resp, responseRewriter())
 	}
+}
+
+// isMessagesRequest reports whether path addresses the Messages API, which is
+// the traffic carrying prompts. The path is normalized and compared without
+// case first: "//v1/messages", "/v1/../v1/messages" and "/V1/messages" all
+// reach the same upstream endpoint, and each one used to skip anonymization
+// and forward the prompt verbatim.
+func isMessagesRequest(p string) bool {
+	clean := path.Clean("/" + strings.TrimLeft(p, "/"))
+
+	return strings.HasPrefix(strings.ToLower(clean), "/v1/messages")
 }
 
 // copyProxyHeaders copies non-hop-by-hop headers from src to dst, dropping
@@ -562,16 +574,26 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 	if !isJSON {
 		out := rw.rewrite(string(body))
 
-		if err := checkResidual(extraIgnored, out); err != nil {
+		if err := checkResidual(rw.survivors(out), extraIgnored, out); err != nil {
 			return nil, err
 		}
 
 		return []byte(out), nil
 	}
 
-	doc = rewriteJSONStrings(doc, rw.rewrite)
+	// Org names and custom rules are checked only in the strings the rewrite
+	// touched: a protocol value such as "role":"user" is never rewritten, so an
+	// org called "user" left there is not a leak.
+	var survived []string
 
-	if err := checkResidual(extraIgnored, jsonStrings(doc)...); err != nil {
+	doc = rewriteJSONStrings(doc, func(s string) string {
+		out := rw.rewrite(s)
+		survived = append(survived, rw.survivors(out)...)
+
+		return out
+	})
+
+	if err := checkResidual(survived, extraIgnored, jsonStrings(doc)...); err != nil {
 		return nil, err
 	}
 
@@ -584,16 +606,16 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 // CLAUDE.md, a session resumed from elsewhere, or a client other than Claude
 // Code.
 func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
-	domains, ips, err := mapTargets(engDir, extraIgnored, texts...)
+	mapped, err := mapTargets(engDir, extraIgnored, texts...)
 	if err != nil {
 		return fmt.Errorf("cannot map new targets: %w", err)
 	}
 
-	if domains+ips == 0 {
+	if mapped == 0 {
 		return nil
 	}
 
-	logger.Info("auto-mapped new targets", "domains", domains, "ips", ips)
+	logger.Info("auto-mapped new targets", "count", mapped)
 	proxyCache.invalidate()
 
 	return nil
@@ -601,13 +623,17 @@ func mapBodyTargets(engDir string, texts, extraIgnored []string) error {
 
 // checkResidual is the fail-closed gate. Detection runs before the rewrite, so
 // in a working pipeline nothing real is left; if something is, the rewriter
-// missed it and the body must not go upstream.
+// missed it and the body must not go upstream. survived holds the mapped org
+// names and custom-rule values the rewrite left behind (see survivors); texts
+// are scanned for real-looking domains and IPs.
 //
 // The error names counts, never values. It is returned to the local client,
 // which may fold the text into its next prompt, so the values go to the log
 // the operator can read with "docker logs tanuki" instead.
-func checkResidual(extraIgnored []string, texts ...string) error {
-	residual := residualTargets(extraIgnored, texts...)
+func checkResidual(survived, extraIgnored []string, texts ...string) error {
+	slices.Sort(survived)
+
+	residual := slices.Concat(residualTargets(extraIgnored, texts...), slices.Compact(survived))
 	if len(residual) == 0 {
 		return nil
 	}

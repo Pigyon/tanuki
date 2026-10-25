@@ -189,6 +189,27 @@ func cmdAddIP(args []string) {
 	}
 }
 
+func cmdAddAccount(args []string) {
+	if len(args) == 0 || !awsAccountRegex.MatchString(args[0]) {
+		fatal("Usage: tanuki add-account <12-digit AWS account ID>")
+	}
+
+	eng, err := requireEngagement()
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	if err := addAccountMapping(engagementDir(eng), args[0]); err != nil {
+		fatal(err.Error())
+	}
+
+	fmt.Println()
+
+	if err := showMappings(); err != nil {
+		fatal(err.Error())
+	}
+}
+
 func cmdAddRule(args []string) {
 	if len(args) < 2 {
 		fatal("Usage: tanuki add-rule <real> <fiction>")

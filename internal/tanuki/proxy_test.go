@@ -323,3 +323,60 @@ func TestProxyReportsBrokenUpstreamBody(t *testing.T) {
 		t.Errorf("status = %d, want 502", status)
 	}
 }
+
+// TestPathConfusionCannotSkipAnonymization: the Messages API was recognised by
+// a raw prefix match, so "//v1/messages", "/v1/../v1/messages" and
+// "/V1/messages" reached the same endpoint upstream while skipping the rewrite
+// entirely. The prompt was forwarded verbatim.
+//
+//nolint:paralleltest // t.Setenv forbids t.Parallel.
+func TestPathConfusionCannotSkipAnonymization(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	var received string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	handler := &proxyHandler{upstream: upstream.URL}
+
+	for _, p := range []string{"/v1/messages", "//v1/messages", "/v1/../v1/messages", "/V1/messages"} {
+		received = ""
+		req := httptest.NewRequestWithContext(
+			t.Context(), http.MethodPost, p,
+			strings.NewReader(`{"content":"scan `+testBaseDomain+`"}`),
+		)
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		if strings.Contains(received, testBaseDomain) {
+			t.Errorf("POST %s forwarded the real target: %s", p, received)
+		}
+	}
+}
+
+func TestIsMessagesRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]bool{
+		"/v1/messages":              true,
+		"//v1/messages":             true,
+		"/v1/../v1/messages":        true,
+		"/V1/Messages":              true,
+		"/v1/messages/count_tokens": true,
+		"/v1/models":                false,
+		"/v1/files":                 false,
+		"/":                         false,
+	}
+
+	for p, want := range tests {
+		if got := isMessagesRequest(p); got != want {
+			t.Errorf("isMessagesRequest(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

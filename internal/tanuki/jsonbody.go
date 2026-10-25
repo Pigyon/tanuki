@@ -41,12 +41,29 @@ var opaqueKeys = map[string]bool{
 	"thinking":  true,
 }
 
-// isBinary reports whether obj[key] is base64 (an image, a PDF, a redacted
-// thinking block). A word-bounded org rule can hit it between "+" and "/", and
-// it cannot hold a domain or IP as text, so it is neither rewritten nor
-// scanned. Only a plain-text document source carries prose in "data".
+// binaryDataTypes are the objects whose "data" field carries base64 rather
+// than prose: an image or document source, and a redacted thinking block. A
+// word-bounded org rule can hit base64 between "+" and "/", and it cannot hold
+// a domain or IP as text, so those are neither rewritten nor scanned.
+//
+// The test is against this list rather than "anything but text": a tool's
+// arguments are an object of the tool's own making, so "data" there is
+// ordinary prose that reaches the model, and skipping it let a whole tool
+// input through unrewritten and unchecked.
+var binaryDataTypes = map[string]bool{
+	"base64":            true,
+	"redacted_thinking": true,
+}
+
+// isBinary reports whether obj[key] is base64.
 func isBinary(obj map[string]any, key string) bool {
-	return key == "data" && obj[typeKey] != "text"
+	if key != "data" {
+		return false
+	}
+
+	t, _ := obj[typeKey].(string)
+
+	return binaryDataTypes[t]
 }
 
 // keepAsIs reports whether the string at obj[key] must pass through untouched.
