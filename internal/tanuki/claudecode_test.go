@@ -183,12 +183,22 @@ func readSSE(t *testing.T, stream string) sseClient {
 
 // TestClaudeCodeResponse streams a Claude Code response back through the
 // proxy's SSE path.
+// reverseRewriters builds the pair streamSSEWithRewrite takes: one for prose,
+// one for text inside a JSON fragment.
+func reverseRewriters(engDir string) (rw, rwJSON *rewriter) {
+	mappings := loadMappings(engDir)
+
+	return newRewriter(mappings, directionF2R),
+		newRewriterEscaping(mappings, directionF2R, jsonStringInterior)
+}
+
 func TestClaudeCodeResponse(t *testing.T) {
 	engDir := proxyEngagement(t, "acme-corp.com", "sso.acme-corp.com")
 	stream := string(readFixture(t, "claude_code_response.sse"))
 
 	rec := httptest.NewRecorder()
-	streamSSEWithRewrite(rec, strings.NewReader(stream), newRewriter(loadMappings(engDir), directionF2R))
+	rw, rwJSON := reverseRewriters(engDir)
+	streamSSEWithRewrite(rec, strings.NewReader(stream), rw, rwJSON)
 
 	sent, got := readSSE(t, stream), readSSE(t, rec.Body.String())
 
@@ -224,8 +234,8 @@ func TestStreamReleasesHeldTextAtEnd(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	streamSSEWithRewrite(rec, strings.NewReader(delta("see local")+delta("host:9000")),
-		newRewriter(loadMappings(engDir), directionF2R))
+	rw, rwJSON := reverseRewriters(engDir)
+	streamSSEWithRewrite(rec, strings.NewReader(delta("see local")+delta("host:9000")), rw, rwJSON)
 
 	if got := readSSE(t, rec.Body.String()).blocks[0]; got != "see "+testBaseDomain {
 		t.Errorf("text = %q, want %q", got, "see "+testBaseDomain)
@@ -302,5 +312,38 @@ func BenchmarkAnonymizeNextTurn(b *testing.B) {
 		if _, err := anonymizeUpstreamBody(body); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestToolInputDeltaStaysValidJSON: input_json_delta carries a slice of the
+// tool's argument JSON. A real value holding a quote or a backslash was
+// inserted raw, so the arguments Claude Code accumulated no longer parsed and
+// the tool call was lost.
+func TestToolInputDeltaStaysValidJSON(t *testing.T) {
+	engDir := proxyEngagement(t)
+
+	const realPath = `C:\logs\"run one".txt`
+
+	if _, err := addCustomRule(engDir, realPath, "REPORTFILE"); err != nil {
+		t.Fatalf("addCustomRule: %v", err)
+	}
+
+	fragment := `{\"file_path\": \"REPORTFILE\"}`
+	event := `data: {"type":"content_block_delta","index":0,` +
+		`"delta":{"type":"input_json_delta","partial_json":"` + fragment + `"}}` + "\n\n"
+
+	rec := httptest.NewRecorder()
+	rw, rwJSON := reverseRewriters(engDir)
+	streamSSEWithRewrite(rec, strings.NewReader(event), rw, rwJSON)
+
+	got := readSSE(t, rec.Body.String()).blocks[0]
+
+	var args map[string]string
+	if err := json.Unmarshal([]byte(got), &args); err != nil {
+		t.Fatalf("accumulated tool input does not parse: %v\n  %s", err, got)
+	}
+
+	if args["file_path"] != realPath {
+		t.Errorf("file_path = %q, want %q", args["file_path"], realPath)
 	}
 }

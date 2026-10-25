@@ -73,8 +73,24 @@ func keepAsIs(obj map[string]any, key string) bool {
 
 // rewriteJSONStrings applies fn to every content string in v, in place.
 func rewriteJSONStrings(v any, fn func(string) string) any {
+	return rewriteJSONValue(v, fn, false)
+}
+
+// rewriteJSONValue walks v. toolArgs marks a subtree as a tool's arguments,
+// where every string and every key is content: the names in it belong to the
+// tool's own schema, not to the API, so a tool taking "name", "id" or "type"
+// is ordinary prose there. Treating those as protocol left a target in them
+// unrewritten, and since Claude Code resends the tool_use on every later turn,
+// the gate then refused the whole conversation from that point on.
+func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 	switch t := v.(type) {
 	case map[string]any:
+		if toolArgs {
+			return rewriteToolArgs(t, fn)
+		}
+
+		isToolUse := t[typeKey] == "tool_use"
+
 		for k, val := range t {
 			if s, ok := val.(string); ok {
 				if !keepAsIs(t, k) {
@@ -85,18 +101,35 @@ func rewriteJSONStrings(v any, fn func(string) string) any {
 			}
 
 			if !opaqueKeys[k] {
-				t[k] = rewriteJSONStrings(val, fn)
+				t[k] = rewriteJSONValue(val, fn, isToolUse && k == "input")
 			}
 		}
 	case []any:
 		for i, val := range t {
-			t[i] = rewriteJSONStrings(val, fn)
+			t[i] = rewriteJSONValue(val, fn, toolArgs)
 		}
 	case string:
 		return fn(t)
 	}
 
 	return v
+}
+
+// rewriteToolArgs rewrites every value and key of a tool's arguments. A new
+// map is built because a key cannot be renamed while ranging over one.
+func rewriteToolArgs(t map[string]any, fn func(string) string) map[string]any {
+	out := make(map[string]any, len(t))
+
+	for k, val := range t {
+		if s, ok := val.(string); ok {
+			out[fn(k)] = fn(s)
+			continue
+		}
+
+		out[fn(k)] = rewriteJSONValue(val, fn, true)
+	}
+
+	return out
 }
 
 // jsonStrings returns every key and string in v except opaque and binary
@@ -222,4 +255,15 @@ func reverseSSEEvent(event string, rw *rewriter) string {
 	}
 
 	return strings.Join(lines, "")
+}
+
+// jsonStringInterior returns s as it appears between the quotes of a JSON
+// string, so a value inserted into a JSON fragment keeps the fragment valid.
+func jsonStringInterior(s string) string {
+	quoted, err := encodeJSON(s)
+	if err != nil || len(quoted) < 2 {
+		return s
+	}
+
+	return string(quoted[1 : len(quoted)-1])
 }

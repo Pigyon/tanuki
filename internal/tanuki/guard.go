@@ -129,11 +129,20 @@ func isIgnoredDomain(domain string, extra ...string) bool {
 // collected before anything is written, so no pass sees another's mappings.
 func mapTargets(engDir string, extraIgnored []string, texts ...string) (int, error) {
 	found := findNewTargets(engDir, texts, extraIgnored...)
+	sc := loadScope(engDir)
 
 	var err error
 
 	for _, domain := range found.domains {
-		if addErr := addDomain(engDir, domain, ""); addErr != nil {
+		var addErr error
+
+		if sc.isTarget(domain) {
+			addErr = addDomain(engDir, domain, "")
+		} else {
+			addErr = addHostOnlyDomain(engDir, domain)
+		}
+
+		if addErr != nil {
 			err = errors.Join(err, fmt.Errorf("mapping domain %s: %w", domain, addErr))
 		}
 	}

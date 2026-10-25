@@ -25,6 +25,10 @@ func loadEnvConfig(engDir string) error {
 		return err
 	}
 
+	if err := seedEnvScope(engDir, os.Getenv("TANUKI_SCOPE")); err != nil {
+		return err
+	}
+
 	return seedEnvRules(engDir, os.Getenv("TANUKI_RULES"))
 }
 

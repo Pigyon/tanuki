@@ -150,6 +150,58 @@ func TestToolInputDataFieldIsAnonymized(t *testing.T) {
 	}
 }
 
+// TestToolArgumentsAreContentNotProtocol: a tool's arguments follow the tool's
+// own schema, so a tool taking "name", "id" or "type" carries prose there.
+// Those were treated as protocol fields and left alone, and because Claude
+// Code resends every tool_use in history the gate then refused every later
+// turn of the conversation.
+func TestToolArgumentsAreContentNotProtocol(t *testing.T) {
+	engDir := proxyEngagement(t, testBaseDomain)
+
+	if _, err := addCustomRule(engDir, "John Smith", "Jane Dev"); err != nil {
+		t.Fatalf("addCustomRule: %v", err)
+	}
+
+	proxyCache.invalidate()
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"tool_use","name":"Bash","id":"tu_1","input":` +
+		`{"name":"John Smith at ` + testBaseDomain + `","id":"` + testPublicIP + `",` +
+		`"nested":{"type":"` + testSubDomain + `"}}}]}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	for _, real := range []string{"John Smith", testBaseDomain, testPublicIP, testSubDomain} {
+		if strings.Contains(string(out), real) {
+			t.Errorf("%q survived in tool arguments: %s", real, out)
+		}
+	}
+
+	// The envelope around the arguments is still protocol.
+	for _, protocol := range []string{`"type":"tool_use"`, `"name":"Bash"`, `"id":"tu_1"`, `"role":"user"`} {
+		if !strings.Contains(string(out), protocol) {
+			t.Errorf("protocol field %s was rewritten: %s", protocol, out)
+		}
+	}
+}
+
+// TestToolArgumentKeysAreRewritten: a key in a tool's arguments is the tool's
+// own, so a target used as one must not be forwarded.
+func TestToolArgumentKeysAreRewritten(t *testing.T) {
+	proxyEngagement(t, testBaseDomain)
+
+	out, err := anonymizeUpstreamBody([]byte(`{"messages":[{"role":"user","content":[` +
+		`{"type":"tool_use","name":"Http","input":{"headers":{"host-` + testBaseDomain + `":"v"}}}]}]}`))
+	if err != nil {
+		t.Fatalf("anonymizeUpstreamBody: %v", err)
+	}
+
+	if strings.Contains(string(out), testBaseDomain) {
+		t.Errorf("a target used as a tool argument key survived: %s", out)
+	}
+}
+
 // TestRedactedThinkingPassesThrough: its "data" is an encrypted blob the API
 // has to get back byte for byte.
 func TestRedactedThinkingPassesThrough(t *testing.T) {
