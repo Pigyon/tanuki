@@ -1024,8 +1024,6 @@ func TestMappedHostStillRewritesAtDelimiters(t *testing.T) {
 // TestConcurrentMappingAllocatesOnce: the check for an existing mapping and the
 // append used to run apart, so parallel requests naming one new target each
 // gave it its own fiction (16 requests, 16 ports for one domain).
-//
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 	engDir := setupEngagement(t)
 
@@ -1057,14 +1055,10 @@ func TestConcurrentMappingAllocatesOnce(t *testing.T) {
 // matched any "acme-" case-insensitively and reversed it upper-cased, so
 // "cd acme-api" came back as "cd ACME-api", a directory that does not exist.
 // Ticket lines left in an older engagement must be ignored too.
-//
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestHyphenatedNamesRoundTrip(t *testing.T) {
 	engDir := setupEngagement(t, "acme.com")
 
-	if err := addMapping(engDir, "ticket", "ACME-", "DT-"); err != nil {
-		t.Fatal(err)
-	}
+	writeRawMapping(t, engDir, "ticket|ACME-|DT-")
 
 	mappings := loadMappings(engDir)
 	for _, m := range mappings {
@@ -1084,8 +1078,6 @@ func TestHyphenatedNamesRoundTrip(t *testing.T) {
 // TestDetectionSkipsCodeIdentifiers: attribute access in code looked like a
 // domain on a common TLD, so "logger.info" or "user.name" became targets and
 // their first label an org ("user" then rewrote every "user" in the request).
-//
-//nolint:paralleltest // t.Setenv (via setupEngagement) forbids t.Parallel.
 func TestDetectionSkipsCodeIdentifiers(t *testing.T) {
 	engDir := setupEngagement(t)
 

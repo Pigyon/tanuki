@@ -160,6 +160,16 @@ func TestFictionIPsAreValidAddresses(t *testing.T) {
 	}
 }
 
+// writeRawMapping appends a line to mappings.conf without validation, standing
+// in for a hand-edited or legacy table.
+func writeRawMapping(t *testing.T, engDir, line string) {
+	t.Helper()
+
+	if err := appendToFile(filepath.Join(engDir, "mappings.conf"), line); err != nil {
+		t.Fatalf("appending mapping: %v", err)
+	}
+}
+
 // TestMappingExistsIgnoresMappingContent: the check used to be a substring
 // search over the whole file, so a mapping whose *value* looked like a
 // mappings.conf line satisfied it and the real domain was never mapped.
@@ -168,9 +178,7 @@ func TestMappingExistsIgnoresMappingContent(t *testing.T) {
 
 	engDir := newTestEngagement(t)
 
-	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
-		t.Fatalf("addMapping: %v", err)
-	}
+	writeRawMapping(t, engDir, "custom|codeword|domain|evil.com|localhost:1")
 
 	if mappingExists(engDir, "domain", "evil.com") {
 		t.Error("mappingExists matched inside another mapping's value")
@@ -188,9 +196,7 @@ func TestFindNewDomainsIgnoresMappingContent(t *testing.T) {
 
 	engDir := newTestEngagement(t)
 
-	if err := addMapping(engDir, "custom", "codeword", "domain|evil.com|localhost:1"); err != nil {
-		t.Fatalf("addMapping: %v", err)
-	}
+	writeRawMapping(t, engDir, "custom|codeword|domain|evil.com|localhost:1")
 
 	found := findNewDomains("please scan evil.com today", engDir)
 	if len(found) == 0 {
@@ -214,11 +220,35 @@ func TestMappingExistsMatchesWholeFields(t *testing.T) {
 	}
 }
 
+// TestConfigureHooksKeepsUnparseableSettings: settings.json was replaced with
+// a tanuki-only file whenever it did not parse, so a stray comma cost the
+// operator their permissions and env -- silently, on every proxy start.
+func TestConfigureHooksKeepsUnparseableSettings(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	if err := os.MkdirAll(".claude", 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	const broken = `{"permissions":{"allow":["Bash(ls:*)"]},}`
+
+	path := filepath.Join(".claude", "settings.json")
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := configureHooks(); err == nil {
+		t.Error("configureHooks accepted an unparseable settings.json")
+	}
+
+	if got := readFileContent(path); got != broken {
+		t.Errorf("settings.json was modified:\n got %s\nwant %s", got, broken)
+	}
+}
+
 // TestConfigureHooksInstallsOnlyPreToolUse: the proxy covers what the prompt
 // and tool-output hooks did, and an upgrade must remove the ones an older
 // version installed while keeping the operator's own.
-//
-//nolint:paralleltest // t.Chdir forbids t.Parallel.
 func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 	t.Chdir(t.TempDir())
 
@@ -266,5 +296,65 @@ func TestConfigureHooksInstallsOnlyPreToolUse(t *testing.T) {
 	leftovers, _ := filepath.Glob(filepath.Join(".claude", ".*.tmp"))
 	if len(leftovers) > 0 {
 		t.Errorf("atomic write left temp files: %v", leftovers)
+	}
+}
+
+// TestEnvSeedsSubdomains: a subdomain in TANUKI_DOMAINS was skipped whenever
+// its apex was already mapped, which the documented example asks for.
+func TestEnvSeedsSubdomains(t *testing.T) {
+	engDir := proxyEngagement(t)
+	t.Setenv("TANUKI_DOMAINS", "Example.COM, api.example.com")
+
+	if err := loadEnvConfig(engDir); err != nil {
+		t.Fatalf("loadEnvConfig: %v", err)
+	}
+
+	for _, want := range []string{"example.com", "api.example.com"} {
+		if !mappingExists(engDir, "domain", want) {
+			t.Errorf("%s was not seeded", want)
+		}
+	}
+
+	// A second start must not re-announce what is already mapped.
+	before := loadMappings(engDir)
+
+	if err := loadEnvConfig(engDir); err != nil {
+		t.Fatalf("second loadEnvConfig: %v", err)
+	}
+
+	if after := loadMappings(engDir); len(after) != len(before) {
+		t.Errorf("restart changed the table: %d -> %d mappings", len(before), len(after))
+	}
+}
+
+// TestMappingValuesCannotCarryTheDelimiter: a "|" in a value shifted the
+// fields, so add-rule "a|b" x stored a rule that rewrote "a" to "b|x"; a line
+// break let an imported engagement smuggle in whole extra mappings.
+func TestMappingValuesCannotCarryTheDelimiter(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t)
+
+	rejected := []mappingEntry{
+		{mapCustom, "a|b", "zzz"},
+		{mapCustom, "keep", "ok\ncustom|injected|PWNED"},
+		{mapCustom, "keep", "ok\rcustom|injected|PWNED"},
+		{mapCustom, "", "empty real"},
+		{mapCustom, "empty fiction", ""},
+		{"ticket", "ACME-", "DT-"},
+	}
+
+	for _, m := range rejected {
+		if err := addMapping(engDir, m.Type, m.Real, m.Fiction); err == nil {
+			t.Errorf("addMapping(%+v) was accepted", m)
+		}
+	}
+
+	if got := loadMappings(engDir); len(got) != 0 {
+		t.Errorf("a rejected mapping was written: %+v", got)
+	}
+
+	if err := addMapping(engDir, mapCustom, "Project Phoenix", "Test Alpha"); err != nil {
+		t.Errorf("a valid rule was rejected: %v", err)
 	}
 }

@@ -38,7 +38,6 @@ func captureStdout(t *testing.T, fn func() int) (out string, code int) {
 	return <-done, code
 }
 
-//nolint:paralleltest // captureStdout swaps a process-wide file handle.
 func TestVerifyMappingsPassesOnASoundTable(t *testing.T) {
 	engDir := newTestEngagement(t, testBaseDomain, testSubDomain)
 
@@ -58,8 +57,6 @@ func TestVerifyMappingsPassesOnASoundTable(t *testing.T) {
 // TestVerifyMappingsCatchesANoOpMapping: a mapping whose fiction equals its
 // real value rewrites to itself and protects nothing. verify exists to find
 // exactly this kind of quiet misconfiguration.
-//
-//nolint:paralleltest // captureStdout swaps a process-wide file handle.
 func TestVerifyMappingsCatchesANoOpMapping(t *testing.T) {
 	engDir := newTestEngagement(t, testBaseDomain)
 
@@ -83,8 +80,6 @@ func TestVerifyMappingsCatchesANoOpMapping(t *testing.T) {
 // TestVerifyInputFindsOnlyUnmappedValues is the check worth running over a
 // draft report: mapped targets are covered and must not be reported, unmapped
 // ones must be.
-//
-//nolint:paralleltest // captureStdout swaps a process-wide file handle.
 func TestVerifyInputFindsOnlyUnmappedValues(t *testing.T) {
 	engDir := newTestEngagement(t, testBaseDomain)
 
@@ -123,7 +118,6 @@ func TestVerifyInputFindsOnlyUnmappedValues(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // captureStdout swaps a process-wide file handle.
 func TestVerifyInputAcceptsACleanReport(t *testing.T) {
 	engDir := newTestEngagement(t, testBaseDomain)
 
@@ -146,8 +140,6 @@ func TestVerifyInputAcceptsACleanReport(t *testing.T) {
 // TestRedirectedStdinIgnoresAPipe is why verify cannot hang: a pipe nobody
 // writes to would block io.ReadAll forever, and "docker run -i" supplies
 // exactly that. Pipe input has to be asked for with "-".
-//
-//nolint:paralleltest // swaps os.Stdin.
 func TestRedirectedStdinIgnoresAPipe(t *testing.T) {
 	old := os.Stdin
 
@@ -170,7 +162,6 @@ func TestRedirectedStdinIgnoresAPipe(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // swaps os.Stdin.
 func TestRedirectedStdinAcceptsAFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "in.txt")
 	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {

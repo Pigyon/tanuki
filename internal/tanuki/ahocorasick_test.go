@@ -41,8 +41,8 @@ func TestACReplaceAll(t *testing.T) {
 			patterns:     []string{"acme"},
 			replacements: []string{"dev"},
 			// Repetition is the point: every occurrence must be replaced.
-			input:    "acme acme acme", //nolint:dupword // intentional repetition
-			expected: "dev dev dev",    //nolint:dupword // intentional repetition
+			input:    "acme acme acme",
+			expected: "dev dev dev",
 		},
 		{
 			name:         "no match is a passthrough",

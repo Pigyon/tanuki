@@ -101,18 +101,22 @@ func operatorIgnoredDomains(doc any) []string {
 	return out
 }
 
-// isIgnoredDomain reports whether domain, or the base domain it belongs to, is
-// built in, listed in TANUKI_IGNORE (comma-separated), or in extra (ignores
-// derived from this one request, such as the operator's own email domain).
-// Ignored domains are neither auto-mapped nor reported by the residual check;
-// "tanuki add" still maps one explicitly.
+// isIgnoredDomain reports whether domain, the base domain it belongs to, or
+// any parent of it is built in, listed in TANUKI_IGNORE (comma-separated), or
+// in extra (ignores derived from this one request, such as the operator's own
+// email domain). Ignored domains are neither auto-mapped nor reported by the
+// residual check; "tanuki add" still maps one explicitly.
 func isIgnoredDomain(domain string, extra ...string) bool {
 	domain = strings.ToLower(domain)
 	base := extractBaseDomain(domain)
 
 	for _, ig := range slices.Concat(builtinIgnored, strings.Split(os.Getenv("TANUKI_IGNORE"), ","), extra) {
 		ig = strings.ToLower(strings.TrimSpace(ig))
-		if ig != "" && (ig == domain || ig == base) {
+		if ig == "" {
+			continue
+		}
+
+		if ig == domain || ig == base || strings.HasSuffix(domain, "."+ig) {
 			return true
 		}
 	}

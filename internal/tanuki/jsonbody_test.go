@@ -42,8 +42,6 @@ func field(t *testing.T, out []byte, path ...any) any {
 // "role":"user" into "role":"DEVTARGET" once "user" was an org, and the model
 // name into "DEVTARGET2-opus-5-5" once "claude" was, and the API rejected
 // every request after that.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeLeavesProtocolFieldsAlone(t *testing.T) {
 	proxyEngagement(t, "user.io", "claude.io")
 
@@ -75,8 +73,6 @@ func TestAnonymizeLeavesProtocolFieldsAlone(t *testing.T) {
 // dialect by URL. Mapping json-schema.org rewrote it to a localhost URL and the
 // API rejected the request as an invalid schema. An engagement that already
 // mapped it must not rewrite it either.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeKeepsToolSchemasValid(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 
@@ -119,8 +115,6 @@ func TestAnonymizeKeepsToolSchemasValid(t *testing.T) {
 // TestAnonymizeReadsDecodedStrings: scanning the raw body read the escape in
 // "\nsecret-target.io" as part of the name, mapped "nsecret-target.io", and
 // let the real host through.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeReadsDecodedStrings(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -139,8 +133,6 @@ func TestAnonymizeReadsDecodedStrings(t *testing.T) {
 // tool's own making. A tool called with a "data" argument -- and Claude Code
 // resends every tool_use in history -- went upstream unrewritten, and the
 // fail-closed gate skipped it too, so nothing reported the leak.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestToolInputDataFieldIsAnonymized(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -160,8 +152,6 @@ func TestToolInputDataFieldIsAnonymized(t *testing.T) {
 
 // TestRedactedThinkingPassesThrough: its "data" is an encrypted blob the API
 // has to get back byte for byte.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestRedactedThinkingPassesThrough(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -182,8 +172,6 @@ func TestRedactedThinkingPassesThrough(t *testing.T) {
 // TestAnonymizeKeepsSignedAndBinaryData: a thinking block must go back exactly
 // as the model wrote it or its signature fails, and base64 must not be hit by
 // a word-bounded rule between "+" and "/".
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestAnonymizeKeepsSignedAndBinaryData(t *testing.T) {
 	proxyEngagement(t, testBaseDomain)
 
@@ -223,8 +211,6 @@ func TestAnonymizeKeepsSignedAndBinaryData(t *testing.T) {
 // TestReverseSSEEventKeepsThinkingAndFraming: thinking deltas stay as the
 // model sent them (the client returns them, signed); text deltas are reversed;
 // the event framing is untouched.
-//
-//nolint:paralleltest // t.Setenv forbids t.Parallel.
 func TestReverseSSEEventKeepsThinkingAndFraming(t *testing.T) {
 	engDir := proxyEngagement(t, testBaseDomain)
 	rw := newRewriter(loadMappings(engDir), directionF2R)

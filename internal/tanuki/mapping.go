@@ -24,6 +24,19 @@ const (
 	directionF2R = "f2r"
 )
 
+// Mapping types, as written in the first field of a mappings.conf line.
+const (
+	mapDomain   = "domain"
+	mapWildcard = "wildcard"
+	mapOrg      = "org"
+	mapEmail    = "email"
+	mapPath     = "path"
+	mapCloud    = "cloud"
+	mapIP       = "ip"
+	mapAccount  = "account"
+	mapCustom   = "custom"
+)
+
 // defaultFictionOrg is the fiction org name when none is configured.
 const defaultFictionOrg = "DEVTARGET"
 
@@ -250,7 +263,7 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 
 	for _, m := range sorted {
 		switch {
-		case m.Type == "wildcard":
+		case m.Type == mapWildcard:
 			if direction == directionR2F {
 				suffix := strings.ToLower(strings.TrimPrefix(m.Real, "*"))
 				rw.wildcards = append(rw.wildcards, wildcardMapping{
@@ -260,13 +273,13 @@ func newRewriter(mappings []mappingEntry, direction string) *rewriter {
 				})
 			}
 
-		case m.Type == "ip" && direction == directionR2F:
+		case m.Type == mapIP && direction == directionR2F:
 			// Matched by canonical value so every textual form is caught.
 			if c := canonicalIP(m.Real); c != "" {
 				rw.ipFictions[c] = m.Fiction
 			}
 
-		case m.Type == "org":
+		case m.Type == mapOrg:
 			orgRules = append(orgRules, orgRule(m, direction))
 
 		case direction == directionR2F:
@@ -306,7 +319,7 @@ func fictionHeads(mappings []mappingEntry) (map[string]bool, int) {
 	longest := 0
 
 	for _, m := range mappings {
-		if m.Type == "wildcard" {
+		if m.Type == mapWildcard {
 			continue
 		}
 
@@ -342,12 +355,12 @@ func (rw *rewriter) splitHeld(text string) (send, hold string) {
 // same greedy behaviour.
 func mappingBound(typ string) boundKind {
 	switch typ {
-	case "domain", "email":
+	case mapDomain, mapEmail:
 		return boundHost
-	case "account":
+	case mapAccount:
 		// Not inside a longer run of digits or an identifier.
 		return boundWord
-	case "ip":
+	case mapIP:
 		// Reversing an address glued to more digits built a different one:
 		// with 127.0.0.3 mapped, "127.0.0.35" became "52.94.236.2485", and
 		// where that lands on a valid address a tool goes to a host that is
@@ -449,9 +462,9 @@ func newResidueMachine(mappings []mappingEntry) *acMachine {
 
 	for _, m := range mappings {
 		switch m.Type {
-		case "org":
+		case mapOrg:
 			orgRules = append(orgRules, orgRule(m, directionR2F))
-		case "custom":
+		case mapCustom:
 			custom = append(custom, m.Real)
 		}
 	}
@@ -578,14 +591,18 @@ func (rw *rewriter) wildcardFiction(host string) (string, bool) {
 	return "", false
 }
 
-// mappingKeys returns the "type|real" key of every mapping in engDir. Callers
-// testing many candidates use it to read mappings.conf once instead of once
-// per candidate.
+// mappingKey identifies a mapping by type and real value.
+func mappingKey(typ, realVal string) string {
+	return typ + "|" + realVal
+}
+
+// mappingKeys returns the key of every mapping in engDir. Callers testing many
+// candidates use it to read mappings.conf once instead of once per candidate.
 func mappingKeys(engDir string) map[string]bool {
 	keys := map[string]bool{}
 
 	for _, m := range loadMappings(engDir) {
-		keys[m.Type+"|"+m.Real] = true
+		keys[mappingKey(m.Type, m.Real)] = true
 	}
 
 	return keys
@@ -602,7 +619,7 @@ func lockAllocation(engDir string) func() {
 // mapping *content*, so a custom rule whose fiction text happened to contain
 // "domain|evil.com|" made that domain look mapped and it never got one.
 func mappingExists(engDir, typ, realVal string) bool {
-	return mappingKeys(engDir)[typ+"|"+realVal]
+	return mappingKeys(engDir)[mappingKey(typ, realVal)]
 }
 
 // addCustomRule adds a real|fiction rule unless one exists for realVal, and
@@ -611,14 +628,40 @@ func addCustomRule(engDir, realVal, fiction string) (bool, error) {
 	unlock := lockAllocation(engDir)
 	defer unlock()
 
-	if mappingExists(engDir, "custom", realVal) {
+	if mappingExists(engDir, mapCustom, realVal) {
 		return false, nil
 	}
 
-	return true, addMapping(engDir, "custom", realVal, fiction)
+	return true, addMapping(engDir, mapCustom, realVal, fiction)
+}
+
+var mappingTypes = map[string]bool{
+	mapDomain: true, mapWildcard: true, mapOrg: true, mapEmail: true, mapPath: true,
+	mapCloud: true, mapIP: true, mapAccount: true, mapCustom: true,
+}
+
+// validateMapping rejects values the line format cannot carry. Fields are
+// joined with "|", one mapping per line, so a delimiter or a newline in a
+// value silently reappears as a different mapping, or as several.
+func validateMapping(m mappingEntry) error {
+	switch {
+	case !mappingTypes[m.Type]:
+		return fmt.Errorf("unknown mapping type %q", m.Type)
+	case m.Real == "" || m.Fiction == "":
+		return fmt.Errorf("mapping %q -> %q has an empty value", m.Real, m.Fiction)
+	case strings.ContainsAny(m.Real, "|\r\n"), strings.ContainsAny(m.Fiction, "|\r\n"):
+		return fmt.Errorf("mapping %q -> %q contains \"|\" or a line break", m.Real, m.Fiction)
+	}
+
+	return nil
 }
 
 func addMapping(engDir, typ, realVal, fiction string) error {
+	m := mappingEntry{Type: typ, Real: realVal, Fiction: fiction}
+	if err := validateMapping(m); err != nil {
+		return err
+	}
+
 	return appendToFile(
 		filepath.Join(engDir, "mappings.conf"),
 		fmt.Sprintf("%s|%s|%s", typ, realVal, fiction),
@@ -849,9 +892,9 @@ func usedCounters(m mappingEntry) map[string]int {
 	}
 
 	switch m.Type {
-	case "org":
+	case mapOrg:
 		used["org_counter"] = orgNumberFromFiction(m.Fiction)
-	case "account":
+	case mapAccount:
 		if n, err := strconv.Atoi(m.Fiction); err == nil {
 			used["account_counter"] = n
 		}
@@ -893,7 +936,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 
 	var lines []string
 
-	if !existing["domain|"+baseDomain] {
+	if !existing[mappingKey(mapDomain, baseDomain)] {
 		port, err := allocatePort(engDir, "domain "+baseDomain)
 		if err != nil {
 			return err
@@ -907,7 +950,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, baseMappingLines(baseDomain, port, orgName, fiction)...)
 	}
 
-	if !existing["wildcard|*."+baseDomain] {
+	if !existing[mappingKey(mapWildcard, "*."+baseDomain)] {
 		port, err := allocatePort(engDir, "wildcard *."+baseDomain)
 		if err != nil {
 			return err
@@ -916,7 +959,7 @@ func addDomain(engDir, domain, fictionOrg string) error {
 		lines = append(lines, fmt.Sprintf("wildcard|*.%s|localhost:%d", baseDomain, port))
 	}
 
-	if domain != baseDomain && !existing["domain|"+domain] {
+	if domain != baseDomain && !existing[mappingKey(mapDomain, domain)] {
 		port, err := allocatePort(engDir, "subdomain "+domain)
 		if err != nil {
 			return err
@@ -948,7 +991,7 @@ func addIPMapping(engDir, ip string) error {
 	unlock := lockAllocation(engDir)
 	defer unlock()
 
-	if mappingExists(engDir, "ip", ip) {
+	if mappingExists(engDir, mapIP, ip) {
 		return nil
 	}
 
@@ -962,7 +1005,7 @@ func addIPMapping(engDir, ip string) error {
 		return err
 	}
 
-	return addMapping(engDir, "ip", ip, fictionIP)
+	return addMapping(engDir, mapIP, ip, fictionIP)
 }
 
 // fictionIPFor renders counter n as a loopback fiction matching the address
@@ -1021,7 +1064,7 @@ func addAccountMapping(engDir, id string) error {
 	unlock := lockAllocation(engDir)
 	defer unlock()
 
-	if mappingExists(engDir, "account", id) {
+	if mappingExists(engDir, mapAccount, id) {
 		return nil
 	}
 
@@ -1034,7 +1077,7 @@ func addAccountMapping(engDir, id string) error {
 		return fmt.Errorf("fiction account range exhausted for %s (would leak to upstream)", id)
 	}
 
-	return addMapping(engDir, "account", id, fmt.Sprintf("%012d", n))
+	return addMapping(engDir, mapAccount, id, fmt.Sprintf("%012d", n))
 }
 
 func showMappings() error {
@@ -1308,7 +1351,7 @@ func findNewTargets(engDir string, texts []string, extraIgnored ...string) scann
 			// Base domain first so it gets the lower port and owns the derived
 			// org/email/path mappings; emitted dedupes the apex-only case.
 			for _, candidate := range []string{extractBaseDomain(domain), domain} {
-				if !emitted[candidate] && !existing["domain|"+candidate] {
+				if !emitted[candidate] && !existing[mappingKey(mapDomain, candidate)] {
 					emitted[candidate] = true
 					found.domains = append(found.domains, candidate)
 				}
@@ -1316,14 +1359,14 @@ func findNewTargets(engDir string, texts []string, extraIgnored ...string) scann
 		}
 
 		for _, ip := range s.ips {
-			if !emitted[ip] && !existing["ip|"+ip] {
+			if !emitted[ip] && !existing[mappingKey(mapIP, ip)] {
 				emitted[ip] = true
 				found.ips = append(found.ips, ip)
 			}
 		}
 
 		for _, id := range s.accounts {
-			if !emitted[id] && !existing["account|"+id] {
+			if !emitted[id] && !existing[mappingKey(mapAccount, id)] {
 				emitted[id] = true
 				found.accounts = append(found.accounts, id)
 			}
