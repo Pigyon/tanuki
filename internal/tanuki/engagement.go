@@ -2,6 +2,7 @@ package tanuki
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,7 +106,10 @@ func seedEnvRules(engDir, rules string) error {
 	return nil
 }
 
-func parseArgs(args []string) (positional, fictionOrg string) {
+// parseArgs splits args into the positional values and --fiction-org. An
+// unknown flag is an error rather than something to skip past: a mistyped one
+// used to be dropped in silence, and so was every positional but the last.
+func parseArgs(args []string) (positional []string, fictionOrg string, err error) {
 	skip := false
 
 	for i, arg := range args {
@@ -114,22 +118,34 @@ func parseArgs(args []string) (positional, fictionOrg string) {
 			continue
 		}
 
-		if arg == "--fiction-org" && i+1 < len(args) {
-			fictionOrg = args[i+1]
-			skip = true
-		} else if !strings.HasPrefix(arg, "-") {
-			positional = arg
+		switch {
+		case arg == "--fiction-org":
+			if i+1 >= len(args) {
+				return nil, "", errors.New("--fiction-org needs a name")
+			}
+
+			fictionOrg, skip = args[i+1], true
+		case strings.HasPrefix(arg, "-"):
+			return nil, "", fmt.Errorf("unknown option %q", arg)
+		default:
+			positional = append(positional, arg)
 		}
 	}
 
-	return positional, fictionOrg
+	return positional, fictionOrg, nil
 }
 
 func cmdInit(args []string) {
-	name, fictionOrg := parseArgs(args)
-	if name == "" {
+	names, fictionOrg, err := parseArgs(args)
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	if len(names) != 1 {
 		fatal("Usage: tanuki init <engagement-name> [--fiction-org NAME]")
 	}
+
+	name := names[0]
 
 	if err := validateEngagementName(name); err != nil {
 		fatal(err.Error())
@@ -157,9 +173,13 @@ func cmdInit(args []string) {
 }
 
 func cmdAdd(args []string) {
-	domain, fictionOrg := parseArgs(args)
-	if domain == "" {
-		fatal("Usage: tanuki add <domain> [--fiction-org NAME]")
+	domains, fictionOrg, err := parseArgs(args)
+	if err != nil {
+		fatal(err.Error())
+	}
+
+	if len(domains) == 0 {
+		fatal("Usage: tanuki add <domain>... [--fiction-org NAME]")
 	}
 
 	eng, err := requireEngagement()
@@ -167,8 +187,10 @@ func cmdAdd(args []string) {
 		fatal(err.Error())
 	}
 
-	if err := addDomain(engagementDir(eng), domain, fictionOrg); err != nil {
-		fatal(err.Error())
+	for _, domain := range domains {
+		if err := addDomain(engagementDir(eng), domain, fictionOrg); err != nil {
+			fatal(err.Error())
+		}
 	}
 
 	fmt.Println()
@@ -180,7 +202,7 @@ func cmdAdd(args []string) {
 
 func cmdAddIP(args []string) {
 	if len(args) == 0 {
-		fatal("Usage: tanuki add-ip <ip>")
+		fatal("Usage: tanuki add-ip <ip>...")
 	}
 
 	eng, err := requireEngagement()
@@ -188,8 +210,22 @@ func cmdAddIP(args []string) {
 		fatal(err.Error())
 	}
 
-	if err := addIPMapping(engagementDir(eng), args[0]); err != nil {
-		fatal(err.Error())
+	// addIPMapping skips anything it cannot or should not map. That silence is
+	// right on the detection path and wrong here, where the operator is being
+	// told their target is covered.
+	for _, arg := range args {
+		ip := canonicalIP(arg)
+
+		switch {
+		case ip == "":
+			fatal("not an IP address: " + arg)
+		case isPrivateIP(ip):
+			fatal(arg + " is a private or loopback address; it is never sent upstream, so it is not mapped")
+		}
+
+		if err := addIPMapping(engagementDir(eng), arg); err != nil {
+			fatal(err.Error())
+		}
 	}
 
 	fmt.Println()
@@ -444,13 +480,10 @@ func cmdActivate(args []string) {
 	fmt.Printf("[tanuki] Activated engagement: %s\n", name)
 }
 
-// readSettings loads .claude/settings.json, or returns an empty map when
-// there is no file yet.
-//
-// A file that exists but does not parse is an error, never a fresh start: the
-// file is the operator's, and overwriting it threw away their permissions and
-// env on every proxy start. removeTanukiSettings already refuses in the same
-// situation.
+// readSettings loads .claude/settings.json, or an empty map when there is no
+// file yet. A file that exists but does not parse is an error, never a fresh
+// start: it is the operator's, and overwriting it threw away their permissions
+// and env. removeTanukiSettings already refuses in the same situation.
 func readSettings(path string) (map[string]any, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {

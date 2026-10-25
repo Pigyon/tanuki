@@ -230,11 +230,10 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// isMessagesRequest reports whether path addresses the Messages API, which is
-// the traffic carrying prompts. The path is normalized and compared without
-// case first: "//v1/messages", "/v1/../v1/messages" and "/V1/messages" all
-// reach the same upstream endpoint, and each one used to skip anonymization
-// and forward the prompt verbatim.
+// isMessagesRequest reports whether path addresses the Messages API, the
+// traffic carrying prompts. The path is cleaned and compared without case:
+// "//v1/messages", "/v1/../v1/messages" and "/V1/messages" all reach the same
+// endpoint upstream, and each one used to skip anonymization.
 func isMessagesRequest(p string) bool {
 	clean := path.Clean("/" + strings.TrimLeft(p, "/"))
 
@@ -273,9 +272,8 @@ type sseSink struct {
 	flusher http.Flusher
 	rw      *rewriter
 	// rwJSON reverses into a JSON fragment, escaping each real value as it is
-	// inserted. input_json_delta carries a slice of the tool's argument JSON,
-	// so a value holding a quote or a backslash would otherwise end the string
-	// early and the accumulated arguments would not parse.
+	// inserted: input_json_delta carries a slice of the tool's argument JSON,
+	// where an unescaped quote or backslash ends the string early.
 	rwJSON *rewriter
 	held   map[string]*heldDelta // by content block index
 }
@@ -601,9 +599,9 @@ func anonymizeUpstreamBody(body []byte) ([]byte, error) {
 		return []byte(out), nil
 	}
 
-	// Org names and custom rules are checked only in the strings the rewrite
-	// touched: a protocol value such as "role":"user" is never rewritten, so an
-	// org called "user" left there is not a leak.
+	// Only the strings the rewrite touched are checked for org and custom
+	// values: "role":"user" is never rewritten, so an org named "user" sitting
+	// there is not a leak.
 	var survived []string
 
 	doc = rewriteJSONStrings(doc, func(s string) string {

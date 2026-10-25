@@ -36,12 +36,10 @@ const (
 	// boundWord needs a non-word character or the edge of the text on both
 	// sides, as the regexp \b does.
 	boundWord
-	// boundAddress refuses a match that is glued to a character an address
-	// can continue with, so a mapped IP is not found inside a longer one.
+	// boundAddress keeps a mapped IP from matching inside a longer address.
 	boundAddress
 	// boundWordPart also accepts the edges of one part of a compound
-	// identifier, so an org name is found in "acme_prod", "AcmeCloud" and
-	// "getACMEToken" rather than only where it stands alone.
+	// identifier: "acme_prod", "AcmeCloud", "getACMEToken".
 	boundWordPart
 )
 
@@ -168,8 +166,7 @@ func (m *acMachine) search(text string) []acMatch {
 	return matches
 }
 
-// find returns every match whose pattern's bound holds, overlapping ones
-// included.
+// find returns every match whose bound holds, overlapping ones included.
 func (m *acMachine) find(text string) []acMatch {
 	return m.keepBounded(text, m.search(text))
 }
@@ -216,15 +213,12 @@ func isLabelByte(b byte) bool {
 	}
 }
 
-// domainContinues reports whether the hostname matched up to i carries on into
-// a longer name, so the match is only a prefix of a different host.
+// domainContinues reports whether the hostname matched up to i runs on into a
+// longer name, making the match a prefix of a different host.
 //
-// A dot is the hard case: "acme.com.br" and "acme.community" are other hosts,
-// while "acme.com.txt" is a file named after one. Telling them apart by eye is
-// what leaked -- every dot counted as a continuation, so a target with a file
-// extension after it was left for the org rule, which rewrote the registrable
-// name and left the subdomain label in clear ("bounty.acme.com.txt"). The
-// whole token decides instead: it carries on only when it is itself a domain.
+// A dot decides nothing on its own: "acme.com.br" and "acme.community" are
+// other hosts, while "acme.com.txt" is a file named after one. The whole token
+// is what carries on -- and only when it is itself a domain.
 func domainContinues(text string, start, i int) bool {
 	if i >= len(text) {
 		return false
@@ -247,8 +241,7 @@ func domainContinues(text string, start, i int) bool {
 	return isRealDomain(hostToken(text, start, i))
 }
 
-// hostToken returns the whole hostname-shaped run starting at start, which
-// reaches past i through any further labels.
+// hostToken returns the whole hostname-shaped run starting at start.
 func hostToken(text string, start, i int) string {
 	end := i
 
@@ -281,9 +274,9 @@ func addressContinues(text string, i int) bool {
 	}
 }
 
-// keepBounded discards the matches whose surroundings their pattern's bound
-// rules out. It runs before the longest match is chosen, so a longer pattern
-// that fails its bound leaves the way clear for a shorter one that holds.
+// keepBounded drops matches their pattern's bound rules out. It runs before
+// the longest match is chosen, so a longer pattern that fails its bound leaves
+// the way clear for a shorter one that holds.
 func (m *acMachine) keepBounded(text string, matches []acMatch) []acMatch {
 	if m.bounds == nil {
 		return matches
@@ -300,11 +293,9 @@ func (m *acMachine) keepBounded(text string, matches []acMatch) []acMatch {
 	return kept
 }
 
-// isBounded reports whether match satisfies its pattern's bound.
-//
-// A host is only checked on the right. Refusing a match that is *preceded* by
+// isBounded checks a host only on the right: refusing a match *preceded* by
 // label bytes would leave "notacme.com" whole, and hiding the target matters
-// more than leaving an unrelated name intact; the org rule still covers the
+// more than leaving an unrelated name intact. The org rule still covers the
 // bare label in whatever the automaton declines.
 func (m *acMachine) isBounded(text string, match acMatch) bool {
 	if match.index >= len(m.bounds) {
@@ -327,8 +318,8 @@ func (m *acMachine) isBounded(text string, match acMatch) bool {
 	return true
 }
 
-// around returns the runes before and at i, and the one after that, with
-// utf8.RuneError standing in for any that falls outside text.
+// around returns the runes before and at i, and the one after that;
+// utf8.RuneError stands in for any that falls outside text.
 func around(text string, i int) (before, at, after rune) {
 	before, at, after = utf8.RuneError, utf8.RuneError, utf8.RuneError
 

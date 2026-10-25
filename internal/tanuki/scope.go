@@ -2,7 +2,6 @@ package tanuki
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,20 +12,16 @@ const scopeFile = "scope.conf"
 // scope is the set of domains an engagement is actually testing, as a bug
 // bounty program publishes it.
 //
-// It decides how much fiction a detected domain earns. A domain in scope is a
-// target: it gets the derived org, email, path and cloud mappings, so the org
-// name is rewritten wherever it appears. A domain merely seen in traffic gets
-// a hostname mapping and nothing else, because an org rule for it rewrites an
-// everyday word everywhere -- one docs.python.org in tool output used to turn
-// "written in Python" into "written in DEVTARGET2".
-//
-// An empty scope means every detected domain is treated as a target, which is
-// how an engagement behaves until a scope is set.
+// A domain in scope is a target and earns the derived org, email, path and
+// cloud mappings. A domain merely seen gets a hostname mapping and nothing
+// else, because an org rule rewrites an everyday word everywhere: one
+// docs.python.org in tool output turned "written in Python" into "written in
+// DEVTARGET2". An empty scope treats every detected domain as a target.
 type scope []string
 
 // parseScope reads one pattern per line, ignoring blanks and comments. A
-// leading "*." is dropped: "*.acme.com" and "acme.com" both cover the apex and
-// everything under it, which is what a program means by either.
+// leading "*." is dropped: either spelling covers the apex and everything
+// under it, which is what a program means by both.
 func parseScope(data string) scope {
 	var s scope
 
@@ -68,8 +63,7 @@ func (s scope) covers(domain string) bool {
 	return false
 }
 
-// isTarget reports whether a detected domain earns the derived mappings. With
-// no scope set, every domain does.
+// isTarget reports whether a detected domain earns the derived mappings.
 func (s scope) isTarget(domain string) bool {
 	return len(s) == 0 || s.covers(domain)
 }
@@ -78,11 +72,7 @@ func (s scope) isTarget(domain string) bool {
 // whether it did.
 func addToScope(engDir, pattern string) (bool, error) {
 	p := normalizeScopePattern(pattern)
-	if p == "" {
-		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
-	}
-
-	if strings.ContainsAny(p, "|\r\n") {
+	if p == "" || strings.ContainsAny(p, "|\r\n") {
 		return false, fmt.Errorf("invalid scope pattern: %q", pattern)
 	}
 
@@ -119,7 +109,7 @@ func writeScope(engDir string, s scope) error {
 		content += strings.Join(s, "\n") + "\n"
 	}
 
-	return os.WriteFile(filepath.Join(engDir, scopeFile), []byte(content), 0o600)
+	return writeFileContent(filepath.Join(engDir, scopeFile), content)
 }
 
 // seedEnvScope adds the comma-separated patterns in TANUKI_SCOPE.

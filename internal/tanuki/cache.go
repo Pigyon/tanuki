@@ -9,7 +9,6 @@ import (
 type rewriterCache struct {
 	mu          sync.RWMutex
 	engDir      string
-	mappings    []mappingEntry
 	r2f         *rewriter
 	f2r         *rewriter
 	f2rJSON     *rewriter
@@ -50,13 +49,15 @@ func (c *rewriterCache) rewriterOrError(engDir, direction string) (*rewriter, er
 		return c.pick(direction), c.loadErr
 	}
 
-	c.engDir = engDir
-	c.mappings, c.loadErr = readMappingsFile(engDir)
+	var mappings []mappingEntry
 
-	if len(c.mappings) > 0 {
-		c.r2f = newRewriter(c.mappings, directionR2F)
-		c.f2r = newRewriter(c.mappings, directionF2R)
-		c.f2rJSON = newRewriterEscaping(c.mappings, directionF2R, jsonStringInterior)
+	c.engDir = engDir
+	mappings, c.loadErr = readMappingsFile(engDir)
+
+	if len(mappings) > 0 {
+		c.r2f = newRewriter(mappings, directionR2F)
+		c.f2r = newRewriter(mappings, directionF2R)
+		c.f2rJSON = newRewriterEscaping(mappings, directionF2R, jsonStringInterior)
 	} else {
 		c.r2f = nil
 		c.f2r = nil

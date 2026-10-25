@@ -41,15 +41,12 @@ var opaqueKeys = map[string]bool{
 	"thinking":  true,
 }
 
-// binaryDataTypes are the objects whose "data" field carries base64 rather
-// than prose: an image or document source, and a redacted thinking block. A
-// word-bounded org rule can hit base64 between "+" and "/", and it cannot hold
-// a domain or IP as text, so those are neither rewritten nor scanned.
+// binaryDataTypes are the objects whose "data" field holds base64, not prose.
+// A word-bounded org rule can hit base64 between "+" and "/", and it cannot
+// carry a domain or IP as text, so those are neither rewritten nor scanned.
 //
-// The test is against this list rather than "anything but text": a tool's
-// arguments are an object of the tool's own making, so "data" there is
-// ordinary prose that reaches the model, and skipping it let a whole tool
-// input through unrewritten and unchecked.
+// Matching the list, rather than "anything but text", is what keeps a tool's
+// own "data" argument in scope: that is prose the model reads.
 var binaryDataTypes = map[string]bool{
 	"base64":            true,
 	"redacted_thinking": true,
@@ -77,11 +74,9 @@ func rewriteJSONStrings(v any, fn func(string) string) any {
 }
 
 // rewriteJSONValue walks v. toolArgs marks a subtree as a tool's arguments,
-// where every string and every key is content: the names in it belong to the
-// tool's own schema, not to the API, so a tool taking "name", "id" or "type"
-// is ordinary prose there. Treating those as protocol left a target in them
-// unrewritten, and since Claude Code resends the tool_use on every later turn,
-// the gate then refused the whole conversation from that point on.
+// where every string and every key is content: those names come from the
+// tool's own schema, not the API, so a tool taking "name", "id" or "type"
+// carries prose in them.
 func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -115,8 +110,8 @@ func rewriteJSONValue(v any, fn func(string) string, toolArgs bool) any {
 	return v
 }
 
-// rewriteToolArgs rewrites every value and key of a tool's arguments. A new
-// map is built because a key cannot be renamed while ranging over one.
+// rewriteToolArgs rewrites every key and value of a tool's arguments. It
+// builds a new map because a key cannot be renamed while ranging over one.
 func rewriteToolArgs(t map[string]any, fn func(string) string) map[string]any {
 	out := make(map[string]any, len(t))
 
@@ -258,7 +253,7 @@ func reverseSSEEvent(event string, rw *rewriter) string {
 }
 
 // jsonStringInterior returns s as it appears between the quotes of a JSON
-// string, so a value inserted into a JSON fragment keeps the fragment valid.
+// string, keeping a fragment valid when a value is inserted into it.
 func jsonStringInterior(s string) string {
 	quoted, err := encodeJSON(s)
 	if err != nil || len(quoted) < 2 {
