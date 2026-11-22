@@ -2,7 +2,10 @@
 
 # Cross-compiles from the build platform: Go needs no emulation, so an
 # arm64 image builds at native speed on an amd64 runner.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
+# Pinned to a patch release and digest so a rebuild is reproducible, and
+# Dependabot opens a PR for each Go security release instead of the tag
+# moving underneath us.
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH

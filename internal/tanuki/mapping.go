@@ -613,6 +613,10 @@ func (rw *rewriter) rewriteWildcards(text string) string {
 	pos := 0
 
 	for _, loc := range locs {
+		// An escape the match swallowed ("%2F%2Fapi.amazon.com") stays in the
+		// text: replacing it would turn "%2F%2F" into "%2F%".
+		loc[0] = skipPercentEscape(text, loc[0], loc[1])
+
 		// Compare lowercased so "API.AMAZON.COM" is caught before the exact
 		// pass rewrites its base and leaks the "API" label.
 		host := strings.ToLower(text[loc[0]:loc[1]])
@@ -1702,6 +1706,78 @@ func (rw *rewriter) replaceIPs(text string, re *regexp.Regexp) string {
 // like "例え". startsMidWord does that job for every script.
 var domainRegex = regexp.MustCompile(`([\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+\p{L}{2,}\b`)
 
+// skipPercentEscape returns where the hostname in the domainRegex match
+// [start,end) really begins. Hex digits are label characters, so in
+// "%2F%2Facme.com" the match starts at the "2F" and the host was read as
+// "2facme.com". That registered the org as "2facme", so a later bare "Acme"
+// was never rewritten, and it put the host outside a scope of "acme.com".
+//
+// Only an escape for a delimiter is skipped: one for a letter or a digit is
+// not how anything encodes a URL, and "50%deals.com" names deals.com, not
+// als.com. "%25" is "%" itself, so a double-encoded "%252F" is skipped whole.
+// When the rest is no hostname on its own the match is left as it was.
+func skipPercentEscape(text string, start, end int) int {
+	if start == 0 || text[start-1] != '%' {
+		return start
+	}
+
+	from := start
+
+	for from+2 < end {
+		b, ok := delimiterEscape(text[from : from+2])
+		if !ok {
+			break
+		}
+
+		from += 2
+
+		if b != '%' {
+			break
+		}
+	}
+
+	if from == start || !wholeHost(text[from:end]) {
+		return start
+	}
+
+	return from
+}
+
+// delimiterEscape decodes the two hex digits of a percent-escape, and reports
+// whether they encode a delimiter rather than something a label can hold.
+func delimiterEscape(hex string) (byte, bool) {
+	if !isHexDigit(hex[0]) || !isHexDigit(hex[1]) {
+		return 0, false
+	}
+
+	b := unhex(hex[0])<<4 | unhex(hex[1])
+
+	return b, b < 0x80 && !isLabelByte(b) && b != '.'
+}
+
+// wholeHost reports whether domainRegex matches all of s.
+func wholeHost(s string) bool {
+	loc := domainRegex.FindStringIndex(s)
+
+	return loc != nil && loc[0] == 0 && loc[1] == len(s)
+}
+
+func unhex(b byte) byte {
+	switch {
+	case b >= 'a':
+		return b - 'a' + 10
+	case b >= 'A':
+		return b - 'A' + 10
+	default:
+		return b - '0'
+	}
+}
+
+// hasSuffixFold reports whether s ends with suffix, ignoring ASCII case.
+func hasSuffixFold(s, suffix string) bool {
+	return len(s) >= len(suffix) && strings.EqualFold(s[len(s)-len(suffix):], suffix)
+}
+
 func hasCommonTLD(domain string) bool {
 	parts := strings.Split(domain, ".")
 	if len(parts) < 2 {
@@ -1725,10 +1801,18 @@ func isRealDomain(domain string) bool {
 // does: after "://" or "@", or with a path right after it. A bare token on an
 // uncommon TLD is far more often code than a domain, so it needs one of these
 // markers.
+//
+// The percent-encoded forms count too ("%3A%2F%2F", "%40", "%2F"): a redirect
+// or return URL in a query string is written that way, and it names a host
+// just as plainly.
 func hostContext(text string, start, end int) bool {
-	pre := text[:start]
+	return hostMarkerBefore(text[:start]) || hostMarkerAfter(text, start, end)
+}
 
-	if strings.HasSuffix(pre, "://") {
+// hostMarkerBefore reports whether pre ends in a scheme separator or in the
+// "@" of an address.
+func hostMarkerBefore(pre string) bool {
+	if strings.HasSuffix(pre, "://") || hasSuffixFold(pre, "%3A%2F%2F") {
 		return true
 	}
 
@@ -1739,24 +1823,38 @@ func hostContext(text string, start, end int) bool {
 		return true
 	}
 
-	if end >= len(text) {
-		return false
-	}
+	return hasSuffixFold(pre, "%40") && len(pre) > 3 && isAlnumByte(pre[len(pre)-4])
+}
 
-	switch text[end] {
-	case '/':
+// hostMarkerAfter reports whether the token at [start,end) is followed by a
+// path, directly or after a port.
+func hostMarkerAfter(text string, start, end int) bool {
+	switch slash := slashAt(text, end); {
+	case slash > 0:
 		// The weakest marker: "gopkg.in/yaml.v3" and "docs.rs/serde" are module
 		// paths, so two labels need a scheme or an "@" instead. A digit after
 		// the slash is division -- "obj.data.app/2" -- not a path.
-		if end+1 < len(text) && text[end+1] >= '0' && text[end+1] <= '9' {
+		if after := end + slash; after < len(text) && text[after] >= '0' && text[after] <= '9' {
 			return false
 		}
 
 		return strings.Count(text[start:end], ".") >= 2
-	case ':':
+	case end < len(text) && text[end] == ':':
 		return portThenPath(text, end+1)
 	default:
 		return false
+	}
+}
+
+// slashAt returns the length of the "/" or "%2F" at i, or 0 if there is none.
+func slashAt(text string, i int) int {
+	switch {
+	case i < len(text) && text[i] == '/':
+		return 1
+	case len(text)-i >= 3 && strings.EqualFold(text[i:i+3], "%2F"):
+		return 3
+	default:
+		return 0
 	}
 }
 
@@ -1871,7 +1969,7 @@ func scanTargets(text string) scanned {
 			continue
 		}
 
-		domain := hostInMatch(text, loc[0], loc[1])
+		domain := hostInMatch(text, skipPercentEscape(text, loc[0], loc[1]), loc[1])
 		if domain == "" || seen[domain] {
 			continue
 		}

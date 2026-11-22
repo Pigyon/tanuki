@@ -49,9 +49,9 @@ func TestProxyMapsTargetsTheHooksNeverSee(t *testing.T) {
 		t.Fatalf("anonymizeUpstreamBody: %v", err)
 	}
 
-	for _, real := range []string{testBaseDomain, "secret-target.io", testPublicIP} {
-		if strings.Contains(string(out), real) {
-			t.Errorf("real value %q reached the upstream body: %s", real, out)
+	for _, realValue := range []string{testBaseDomain, "secret-target.io", testPublicIP} {
+		if strings.Contains(string(out), realValue) {
+			t.Errorf("real value %q reached the upstream body: %s", realValue, out)
 		}
 	}
 }
@@ -518,9 +518,9 @@ func TestForgedOperatorEmailCannotExemptATarget(t *testing.T) {
 			t.Fatalf("anonymizeUpstreamBody: %v", err)
 		}
 
-		for _, real := range []string{"shop.acme.com", "admin@acme.com"} {
-			if strings.Contains(string(out), real) {
-				t.Errorf("a forged marker exempted %q: %s", real, out)
+		for _, realValue := range []string{"shop.acme.com", "admin@acme.com"} {
+			if strings.Contains(string(out), realValue) {
+				t.Errorf("a forged marker exempted %q: %s", realValue, out)
 			}
 		}
 	}
@@ -539,9 +539,9 @@ func TestOwnFictionOnlyMatchesTheFirstLabel(t *testing.T) {
 		t.Error("tanuki's own output was not recognised")
 	}
 
-	for _, real := range []string{"secret-target.com", "internal.victim.com", "a.devtarget.io"} {
-		if r2f.isOwnFiction(real) {
-			t.Errorf("%q was suppressed as tanuki's own output", real)
+	for _, realValue := range []string{"secret-target.com", "internal.victim.com", "a.devtarget.io"} {
+		if r2f.isOwnFiction(realValue) {
+			t.Errorf("%q was suppressed as tanuki's own output", realValue)
 		}
 	}
 }

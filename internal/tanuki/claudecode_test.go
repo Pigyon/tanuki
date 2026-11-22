@@ -110,9 +110,9 @@ func TestClaudeCodeRequest(t *testing.T) {
 	assertPreserved(t, "$", orig, got)
 
 	lower := strings.ToLower(string(out))
-	for _, real := range fixtureRealValues {
-		if strings.Contains(lower, real) {
-			t.Errorf("real value %q reached the upstream body", real)
+	for _, realValue := range fixtureRealValues {
+		if strings.Contains(lower, realValue) {
+			t.Errorf("real value %q reached the upstream body", realValue)
 		}
 	}
 

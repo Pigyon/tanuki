@@ -102,9 +102,9 @@ func TestNoRealValueSurvivesRewrite(t *testing.T) {
 	for _, text := range texts {
 		got := r2f.rewrite(text)
 
-		for _, real := range leaky {
-			if strings.Contains(got, real) {
-				t.Errorf("real value %q leaked\n  input:  %s\n  output: %s", real, text, got)
+		for _, realValue := range leaky {
+			if strings.Contains(got, realValue) {
+				t.Errorf("real value %q leaked\n  input:  %s\n  output: %s", realValue, text, got)
 			}
 		}
 	}
@@ -282,9 +282,9 @@ func TestTargetWithAFileExtensionDoesNotLeak(t *testing.T) {
 	for _, in := range leaky {
 		got := r2f.rewrite(in)
 
-		for _, real := range []string{testOrgName, "bounty", "internal-admin"} {
-			if strings.Contains(strings.ToLower(got), real) {
-				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, real)
+		for _, realValue := range []string{testOrgName, "bounty", "internal-admin"} {
+			if strings.Contains(strings.ToLower(got), realValue) {
+				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, realValue)
 			}
 		}
 	}
@@ -1364,5 +1364,74 @@ func TestDetectionSkipsCodeIdentifiers(t *testing.T) {
 
 	if found := findNewDomains("contact admin@acme-corp.com", engDir); len(found) != 1 {
 		t.Errorf("real domain not detected: %v", found)
+	}
+}
+
+// TestPercentEncodedHostsAreDetectedWhole is a regression test. Hex digits
+// are label characters, so "%2F%2Fzorblax.com" was detected as
+// "2fzorblax.com": the org became "2fzorblax", and a later bare "Zorblax" in
+// the same engagement reached the upstream API unrewritten.
+func TestPercentEncodedHostsAreDetectedWhole(t *testing.T) {
+	t.Parallel()
+
+	const zorblax = "zorblax.com"
+
+	engDir := newTestEngagement(t, "example.com")
+
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{input: "redirect_uri=https%3A%2F%2Fzorblax.com%2Fcb", expected: []string{zorblax}},
+		{input: "return=https%3a%2f%2fportal.zorblax.com%2fhome", expected: []string{zorblax, "portal." + zorblax}},
+		{input: "next=%2F%2Fzorblax.com", expected: []string{zorblax}},
+		{input: "email=ops%40zorblax.com", expected: []string{zorblax}},
+		{input: "u=https%253A%252F%252Fzorblax.com", expected: []string{zorblax}},
+		// An encoded marker vouches for an uncommon TLD as the plain one does.
+		{input: "cb=https%3A%2F%2Fportal.acme.in%2Flogin", expected: []string{"acme.in", "portal.acme.in"}},
+		{input: "to=ops%40acme.pl", expected: []string{"acme.pl"}},
+		// An escape for a letter is not how a URL is encoded: "%de" is no
+		// delimiter, so the host is read from the "%" on.
+		{input: "save 50%deals.com today", expected: []string{"deals.com"}},
+	}
+
+	for _, tt := range tests {
+		got := findNewDomains(tt.input, engDir)
+		if fmt.Sprint(got) != fmt.Sprint(tt.expected) {
+			t.Errorf("findNewDomains(%q) = %v, want %v", tt.input, got, tt.expected)
+		}
+	}
+}
+
+// TestPercentEncodedHostsRewriteInPlace: the escape in front of a host is
+// part of the URL around it, so the rewrite must leave it whole.
+// "%2F%2Fbounty.amazon.com" came out as "%2F%localhost:9001".
+func TestPercentEncodedHostsRewriteInPlace(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, f2r := rewriters(t, engDir)
+
+	tests := []struct{ input, expected string }{
+		{
+			input:    "return=https%3A%2F%2Finternal.amazon.com%2Fhome",
+			expected: "return=https%3A%2F%2F" + testFictionWildcard + "%2Fhome",
+		},
+		{
+			input:    "return=https%3A%2F%2Famazon.com%2Fhome",
+			expected: "return=https%3A%2F%2F" + testFictionBase + "%2Fhome",
+		},
+	}
+
+	for _, tt := range tests {
+		got := r2f.rewrite(tt.input)
+		if got != tt.expected {
+			t.Errorf("rewrite(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+
+	in := "return=https%3A%2F%2Famazon.com%2Fhome"
+	if back := f2r.rewrite(r2f.rewrite(in)); back != in {
+		t.Errorf("round trip of %q = %q", in, back)
 	}
 }

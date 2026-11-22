@@ -13,7 +13,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/Pigyon/tanuki/ci.yml?branch=master&label=CI&color=233246&logo=githubactions&logoColor=2088FF)](https://github.com/Pigyon/tanuki/actions/workflows/ci.yml)
 [![GHCR](https://img.shields.io/badge/ghcr.io-pigyon%2Ftanuki-233246?logo=github)](https://github.com/Pigyon/tanuki/pkgs/container/tanuki)
 
-[![Go](https://img.shields.io/badge/Go-1.26-233246?logo=go&logoColor=00ADD8)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.27-233246?logo=go&logoColor=00ADD8)](https://go.dev)
 [![Docker](https://img.shields.io/badge/Docker-required-233246?logo=docker&logoColor=2496ED)](https://www.docker.com/)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-integrated-233246?logo=anthropic&logoColor=D97757)](#quick-start)
 [![Image](https://img.shields.io/badge/image-scratch_~10MB-2E7B7E)](#architecture)
@@ -309,7 +309,7 @@ Set in `compose.yaml`:
 ## Known limitations
 
 - **No HTTPS on the proxy.** The proxy listens on plain HTTP. It binds `0.0.0.0` inside the container, and what keeps it private is the published port in `compose.yaml`: `127.0.0.1:18080:18080`, which accepts only connections from the local machine. Removing that `127.0.0.1` prefix, or running the binary outside Docker, exposes an unauthenticated plaintext proxy to the network. The upstream connection to the Anthropic API uses HTTPS.
-- **Literal string matching only.** Encoded forms (URL-encoded, base64, and similar) won't be caught by the Aho-Corasick automaton.
+- **Literal string matching only.** A hostname inside a percent-encoded URL (`return=https%3A%2F%2Facme.com%2Fhome`) is detected and rewritten, since only the delimiters around it are encoded. A form that changes the name's own characters (base64, a name with its letters percent-encoded, HTML entities, and similar) won't be caught by the Aho-Corasick automaton.
 - **Terminology is one-directional.** Pentest terms are rewritten real→fiction only. The model's responses use fiction terms, which pass through as-is.
 - **Wildcard subdomains are not reversible.** Every subdomain without its own mapping collapses onto a single wildcard value, so it cannot be mapped back. Auto-detection creates dedicated mappings for subdomains it sees, and those round-trip normally; the wildcard is the safety net for anything that slips past detection, and it favours hiding the hostname over keeping it usable.
 - **Detection is the weak link, not the rewrite.** Every outbound body is re-scanned after rewriting and refused if a real value survives, so a rewriter bug that drops a *recognised* value is caught. The re-scan sees what detection sees, so it cannot catch a value neither of them recognises, and it skips what is never rewritten: base64 image and document data, and signed thinking blocks. The limitations below are therefore the ones that matter.
