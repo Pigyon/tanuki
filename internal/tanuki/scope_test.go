@@ -179,9 +179,9 @@ func TestInScopeSubdomainOfAnOutOfScopeApex(t *testing.T) {
 		t.Fatalf("anonymizeUpstreamBody: %v", err)
 	}
 
-	for _, real := range []string{"Acme", "s3://acme", "/acme/"} {
-		if strings.Contains(string(out), real) {
-			t.Errorf("%q reached the upstream body: %s", real, out)
+	for _, realValue := range []string{"Acme", "s3://acme", "/acme/"} {
+		if strings.Contains(string(out), realValue) {
+			t.Errorf("%q reached the upstream body: %s", realValue, out)
 		}
 	}
 }

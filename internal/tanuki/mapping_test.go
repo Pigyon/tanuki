@@ -102,9 +102,9 @@ func TestNoRealValueSurvivesRewrite(t *testing.T) {
 	for _, text := range texts {
 		got := r2f.rewrite(text)
 
-		for _, real := range leaky {
-			if strings.Contains(got, real) {
-				t.Errorf("real value %q leaked\n  input:  %s\n  output: %s", real, text, got)
+		for _, realValue := range leaky {
+			if strings.Contains(got, realValue) {
+				t.Errorf("real value %q leaked\n  input:  %s\n  output: %s", realValue, text, got)
 			}
 		}
 	}
@@ -282,9 +282,9 @@ func TestTargetWithAFileExtensionDoesNotLeak(t *testing.T) {
 	for _, in := range leaky {
 		got := r2f.rewrite(in)
 
-		for _, real := range []string{testOrgName, "bounty", "internal-admin"} {
-			if strings.Contains(strings.ToLower(got), real) {
-				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, real)
+		for _, realValue := range []string{testOrgName, "bounty", "internal-admin"} {
+			if strings.Contains(strings.ToLower(got), realValue) {
+				t.Errorf("rewrite(%q) = %q, still holds %q", in, got, realValue)
 			}
 		}
 	}

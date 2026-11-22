@@ -143,9 +143,9 @@ func TestToolInputDataFieldIsAnonymized(t *testing.T) {
 		t.Fatalf("anonymizeUpstreamBody: %v", err)
 	}
 
-	for _, real := range []string{testSubDomain, testBaseDomain, testPublicIP} {
-		if strings.Contains(string(out), real) {
-			t.Errorf("real value %q reached the upstream body: %s", real, out)
+	for _, realValue := range []string{testSubDomain, testBaseDomain, testPublicIP} {
+		if strings.Contains(string(out), realValue) {
+			t.Errorf("real value %q reached the upstream body: %s", realValue, out)
 		}
 	}
 }
@@ -172,9 +172,9 @@ func TestToolArgumentsAreContentNotProtocol(t *testing.T) {
 		t.Fatalf("anonymizeUpstreamBody: %v", err)
 	}
 
-	for _, real := range []string{"John Smith", testBaseDomain, testPublicIP, testSubDomain} {
-		if strings.Contains(string(out), real) {
-			t.Errorf("%q survived in tool arguments: %s", real, out)
+	for _, realValue := range []string{"John Smith", testBaseDomain, testPublicIP, testSubDomain} {
+		if strings.Contains(string(out), realValue) {
+			t.Errorf("%q survived in tool arguments: %s", realValue, out)
 		}
 	}
 

@@ -145,14 +145,14 @@ func TestFictionIPsAreValidAddresses(t *testing.T) {
 	t.Parallel()
 
 	for _, n := range []int{2, 253, 254, 255, 64770, maxFictionIPIndex} {
-		for _, real := range []string{"8.8.8.8", "2001:db8::1"} {
-			fiction, err := fictionIPFor(real, n)
+		for _, realValue := range []string{"8.8.8.8", "2001:db8::1"} {
+			fiction, err := fictionIPFor(realValue, n)
 			if err != nil {
-				t.Fatalf("fictionIPFor(%q, %d): %v", real, n, err)
+				t.Fatalf("fictionIPFor(%q, %d): %v", realValue, n, err)
 			}
 
 			if net.ParseIP(fiction) == nil {
-				t.Errorf("fictionIPFor(%q, %d) = %q, not a valid IP", real, n, fiction)
+				t.Errorf("fictionIPFor(%q, %d) = %q, not a valid IP", realValue, n, fiction)
 			}
 
 			if got, ok := ipCounterFromFiction(fiction); !ok || got != n {
