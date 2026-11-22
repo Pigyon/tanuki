@@ -1435,3 +1435,53 @@ func TestPercentEncodedHostsRewriteInPlace(t *testing.T) {
 		t.Errorf("round trip of %q = %q", in, back)
 	}
 }
+
+// TestOrgNameAfterAnEscapeIsRewritten is a regression test. The hex digits
+// of an escape ending in A-F were read as the start of the word, so "acme"
+// in "%2Facme" was no part of an identifier to the org rule, and the gate's
+// residue check matched the same way: "github.com%2Famazon%2Frepo" went
+// upstream whole.
+func TestOrgNameAfterAnEscapeIsRewritten(t *testing.T) {
+	t.Parallel()
+
+	engDir := newTestEngagement(t, testBaseDomain)
+	r2f, f2r := rewriters(t, engDir)
+
+	leaky := []string{
+		"u=https%3A%2F%2Fgithub.com%2Famazon%2Frepo",
+		"u=https%3a%2f%2fgithub.com%2famazon%2frepo",
+		"q=%3Damazon",
+		"q=x%3Aamazon",
+		"q=a%2Camazon",
+		"q=a%3Famazon",
+		"q=%5Bamazon%5D",
+		"q=%7Bamazon%7D",
+		"q=%2FAMAZON%2F",
+		"q=%2FAmazon_prod",
+		"q=%252Famazon",
+	}
+
+	for _, in := range leaky {
+		got := r2f.rewrite(in)
+		if strings.Contains(strings.ToLower(got), testOrgName) {
+			t.Errorf("rewrite(%q) = %q, still holds %q", in, got, testOrgName)
+		}
+
+		if back := f2r.rewrite(got); !strings.EqualFold(back, in) {
+			t.Errorf("round trip of %q = %q", in, back)
+		}
+
+		if s := r2f.survivors(in); len(s) == 0 {
+			t.Errorf("survivors(%q) found nothing: the gate would pass it", in)
+		}
+	}
+
+	// An escape for a letter or a UTF-8 byte stands for part of the word, as
+	// the character itself would: "%C3%AAamazon" is "êamazon", and
+	// "%6Famazon" is "oamazon".
+	for _, in := range []string{"q=%C3%AAamazon", "q=%6Famazon"} {
+		if got := r2f.rewrite(in); got != in {
+			t.Errorf("rewrite(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}

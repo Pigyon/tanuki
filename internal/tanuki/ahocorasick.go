@@ -342,9 +342,31 @@ func around(text string, i int) (before, at, after rune) {
 
 func isAlnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
+// escapeEndsAt reports whether a percent-escape for a delimiter ends at i, as
+// in "%2Facme". Its hex digits are not part of the word after it: read as
+// letters, "Facme" was one word, so neither the org rule nor the gate's
+// residue check matched "acme" in "github.com%2Facme%2Frepo", and the name
+// went upstream. An escape for a letter or a UTF-8 byte is part of the word,
+// as the character it encodes would be. A double-encoded "%252F" ends one too.
+func escapeEndsAt(text string, i int) bool {
+	if i < 3 {
+		return false
+	}
+
+	if _, ok := delimiterEscape(text[i-2 : i]); !ok {
+		return false
+	}
+
+	return text[i-3] == '%' || i >= 5 && strings.EqualFold(text[i-5:i-2], "%25")
+}
+
 // wordEdge reports whether i is a word boundary, counting "_" as part of a
 // word as \b does, but for every script rather than ASCII alone.
 func wordEdge(text string, i int) bool {
+	if escapeEndsAt(text, i) {
+		return true
+	}
+
 	before, at, _ := around(text, i)
 
 	isWord := func(r rune) bool { return isAlnum(r) || r == '_' }
@@ -361,6 +383,10 @@ func wordEdge(text string, i int) bool {
 // are numbered (DEVTARGET, DEVTARGET2), so rewriting "acme" inside "acme2"
 // would produce another org's fiction and reverse to the wrong target.
 func partEdge(text string, i int) bool {
+	if escapeEndsAt(text, i) {
+		return true
+	}
+
 	before, at, after := around(text, i)
 
 	switch {
